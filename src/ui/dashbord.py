@@ -620,7 +620,6 @@ with tab_model:
         "• Labels: ESA WorldCover (10 m resolution)<br>"
         "• Cloud cover may reduce accuracy<br>"
         "• Seasonal effects not corrected<br>"
-        "• <b>Not suitable</b> for legal/planning decisions"
         "</small></div>",
         unsafe_allow_html=True,
     )
