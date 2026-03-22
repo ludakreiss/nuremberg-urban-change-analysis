@@ -18,7 +18,7 @@ import requests
 
 st.set_page_config(
     page_title="Nuremberg Land Cover Explorer",
-    page_icon="🌍",
+    page_icon="🔍",
     layout="wide",
 )
 
@@ -35,30 +35,25 @@ NUREMBERG_BOUNDS = {
 
 ESA_CLASSES = {
     10:  {"name": "Tree cover",         "color": "#006400"},
-    20:  {"name": "Shrubland",          "color": "#FFBB22"},
-    30:  {"name": "Grassland",          "color": "#FFFF4C"},
-    40:  {"name": "Cropland",           "color": "#F096FF"},
-    50:  {"name": "Built-up",           "color": "#FA0000"},
-    60:  {"name": "Bare / sparse veg",  "color": "#B4B4B4"},
-    70:  {"name": "Snow and ice",       "color": "#F0F0F0"},
-    80:  {"name": "Permanent water",    "color": "#0064C8"},
-    90:  {"name": "Herbaceous wetland", "color": "#0096A0"},
-    95:  {"name": "Mangroves",          "color": "#00CF75"},
-    100: {"name": "Moss and lichen",    "color": "#FAE6A0"},
+    30:  {"name": "Grassland",          "color": "#50E80A"},
+    40:  {"name": "Cropland",           "color": "#BC721D"},
+    50:  {"name": "Built-up",           "color": "#000000"},
+    60:  {"name": "Bare / sparse veg",  "color": "#C0EC70"},
+    80:  {"name": "Permanent water",    "color": "#358FE9"},
 }
 
 QUICK_LOCATIONS = {
-    "🏛️ Old Town":          (49.4543, 11.0775),
-    "🏭 Industrial North":  (49.490,  11.060),
-    "🌳 Reichswald Forest": (49.410,  11.130),
-    "✈️ Airport":           (49.497,  11.078),
+    "Old Town":          (49.4543, 11.0775),
+    "Industrial North":  (49.490,  11.060),
+    "Reichswald Forest": (49.410,  11.130),
+    "Airport":           (49.497,  11.078),
 }
 
 # Half-size of the bounding box drawn around a searched location.
 # 0.008 degrees ≈ roughly 600 m on each side.
 BBOX_HALF = 0.008
 
-#CSS
+# CSS
 
 st.markdown("""
 <style>
@@ -120,23 +115,7 @@ def in_bounds(lat: float, lon: float) -> bool:
 
 
 def try_parse_coordinates(text: str):
-    """
-    Tries to extract two numbers from whatever the user typed.
 
-    Works with all these formats:
-        49.4415° N, 11.0797° E    <- as shown in the hint
-        49.4415N 11.0797E
-        49.4415, 11.0797
-        49.4415 11.0797
-
-    How it works:
-    1. Remove degree symbols (°) and compass letters (N, S, E, W)
-    2. Replace commas with spaces so we have clean separators
-    3. Find all numbers in what remains
-    4. If we end up with exactly two numbers → those are lat and lon
-
-    Returns (lat, lon) as floats, or None if it doesn't look like coords.
-    """
     # Step 1: remove degree symbols and compass directions
     cleaned = re.sub(r"[°NSEWnsew]", " ", text)
     # Step 2: replace commas with spaces
