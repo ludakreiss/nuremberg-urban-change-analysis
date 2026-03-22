@@ -10,18 +10,18 @@ from modeling.evaluate import evaluate_model, false_change_rate, add_feature_noi
 
 
 DATASET_PATH = "data/labels/combined_format/nuremberg_features_labels.parquet"
-TASK = "changing_areas"
+TASKS = ["changing_areas", "built_up_increase", "vegetation_decline"]
 
 
-def main():
-    print("Loading dataset...")
-    df = load_dataset(DATASET_PATH)
+def run_task(df, task):
+    print(f"\n{'=' * 60}")
+    print(f"RUNNING TASK: {task}")
+    print(f"{'=' * 60}")
 
-    print("Creating spatial split...")
     train_df, test_df = spatial_split(df)
 
-    X_train, y_train = prepare_task_data(train_df, TASK)
-    X_test, y_test = prepare_task_data(test_df, TASK)
+    X_train, y_train = prepare_task_data(train_df, task)
+    X_test, y_test = prepare_task_data(test_df, task)
 
     print("\nTraining baseline model...")
     baseline_model = train_baseline_model(X_train, y_train)
@@ -50,17 +50,35 @@ def main():
     print(noisy_results)
     print({"false_change_rate": noisy_fcr})
 
-    os.makedirs("output/modeling_results", exist_ok=True)
-
     results_df = pd.DataFrame([
-        {"model": "baseline", **baseline_results, "false_change_rate": baseline_fcr},
-        {"model": "tree_model", **tree_results, "false_change_rate": tree_fcr},
-        {"model": "tree_model_noisy_test", **noisy_results, "false_change_rate": noisy_fcr},
+        {"task": task, "model": "baseline", **baseline_results, "false_change_rate": baseline_fcr},
+        {"task": task, "model": "tree_model", **tree_results, "false_change_rate": tree_fcr},
+        {"task": task, "model": "tree_model_noisy_test", **noisy_results, "false_change_rate": noisy_fcr},
     ])
 
-    results_df.to_csv(f"output/modeling_results/{TASK}_results.csv", index=False)
+    return results_df
 
-    print(f"\nSaved results to output/modeling_results/{TASK}_results.csv")
+
+def main():
+    print("Loading dataset...")
+    df = load_dataset(DATASET_PATH)
+
+    os.makedirs("output/modeling_results", exist_ok=True)
+
+    all_results = []
+
+    for task in TASKS:
+        task_results = run_task(df, task)
+        all_results.append(task_results)
+
+        task_results.to_csv(f"output/modeling_results/{task}_results.csv", index=False)
+        print(f"Saved: output/modeling_results/{task}_results.csv")
+
+    final_results = pd.concat(all_results, ignore_index=True)
+    final_results.to_csv("output/modeling_results/all_tasks_results.csv", index=False)
+
+    print("\nSaved: output/modeling_results/all_tasks_results.csv")
+    print("\nDone. All 3 tasks finished.")
 
 
 if __name__ == "__main__":
