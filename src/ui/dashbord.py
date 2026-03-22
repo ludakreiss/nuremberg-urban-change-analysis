@@ -136,12 +136,7 @@ def try_parse_coordinates(text: str):
 
 
 def geocode_place(name: str) -> dict:
-    """
-    Looks up a place name using the free Nominatim / OpenStreetMap API.
-
-    We always append 'Nuremberg, Germany' to keep results local.
-    Returns a dict: { lat, lon, display, error }
-    """
+    
     full_query = f"{name}, Nuremberg, Germany"
     try:
         # First try: stay inside Nuremberg bounding box
@@ -198,16 +193,7 @@ def geocode_place(name: str) -> dict:
 
 
 def smart_search(query: str) -> dict:
-    """
-    THE SINGLE SMART SEARCH FUNCTION.
-
-    Automatically decides whether the user typed coordinates or a name:
-    - If it finds exactly two numbers in the text → coordinates
-    - Otherwise → treat as a place name and call the geocoding API
-
-    Always returns the same dict shape:
-        lat, lon, display, error, search_type ("coords" or "place")
-    """
+    
     query = query.strip()
     if not query:
         return {"lat": None, "lon": None, "display": None,
@@ -263,13 +249,7 @@ def mock_predict(lat: float, lon: float) -> dict:
 
 
 def make_location_bbox(lat: float, lon: float, half: float = BBOX_HALF):
-    """
-    Returns the 5 points needed to draw a closed rectangle box
-    around the searched location on the map.
-
-    Why 5 points? The first and last point must be the same to
-    close the rectangle shape.
-    """
+    
     box_lats = [lat - half, lat + half, lat + half, lat - half, lat - half]
     box_lons = [lon - half, lon - half, lon + half, lon + half, lon - half]
     return box_lats, box_lons
