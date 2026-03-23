@@ -30,13 +30,13 @@ print(df)
 # Check if Nuremeberg
 plt.figure(figsize=(8,8))
 esa_map_2020.plot()
-plt.title("Mapa ESA WorldCover - Nuremberg 2020")
+plt.title("Map ESA WorldCover - Nuremberg 2020")
 plt.show()
 plt.close()
 
 plt.figure(figsize=(8,8))
 esa_map_2021.plot()
-plt.title("Mapa ESA WorldCover - Nuremberg 2021")
+plt.title("Map ESA WorldCover - Nuremberg 2021")
 plt.show()
 plt.close()
 
