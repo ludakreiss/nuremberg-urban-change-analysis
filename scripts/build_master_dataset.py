@@ -15,19 +15,19 @@ esa_map_path_2021 = "../data/hf_data/ESA_WorldCover_10m_2021_v200_N48E009_Map.ti
 esa_data_2020 = rioxarray.open_rasterio(esa_map_path_2020)
 esa_data_2021 = rioxarray.open_rasterio(esa_map_path_2021)
 
-# Frame for Nürnberg
+# Frame for Nuremberg
 esa_map_2020 = esa_data_2020.rio.clip_box(*bounds)
 esa_map_2021 = esa_data_2021.rio.clip_box(*bounds)
 
 df_2020 = esa_map_2020.to_dataframe(name="esa_label").reset_index()
 df_2021 = esa_map_2021.to_dataframe(name="esa_label").reset_index()
-# Renombramos columnas para que sean claras para el ML
+
+# Rename columns for easier understanding
 df = df_2020.merge(df_2021, on=['x', 'y'])
-#df = df.rename(columns={'x': 'longitude', 'y': 'latitude'})
-#df_2021 = df_2021.rename(columns={'x': 'longitude', 'y': 'latitude'})
+
 
 print(df)
-# Visualizamos para confirmar que es Nuremberg
+# Check if Nuremeberg
 plt.figure(figsize=(8,8))
 esa_map_2020.plot()
 plt.title("Mapa ESA WorldCover - Nuremberg 2020")
@@ -70,16 +70,16 @@ master_df = df_esa_2020.merge(df_esa_2021, on=['x', 'y']) \
                        .merge(df_red_2021, on=['x', 'y']) \
                        .merge(df_b11_2021, on=['x', 'y'])
 
-# 5. Renombrado final para ML
+# Rename for ML
 master_df = master_df.rename(columns={
     'x': 'longitude', 'y': 'latitude','red_2020_b1': 'b8_2020', 'red_2020_b2': 'b4_2020', 'red_2020_b3': 'b3_2020',
     'b11_2020_b1': 'b11_2020', 'red_2021_b1': 'b8_2021', 'red_2021_b2': 'b4_2021','red_2021_b3':'b3_2021','b11_2021_b1':'b11_2021'
     })
 
-print("¡Éxito! Columnas en el dataset:", master_df.columns.tolist())
+print( master_df.columns.tolist())
 
 os.makedirs("../output", exist_ok=True)
 
-# Guardamos el CSV final
+# Final CSV
 master_df.to_csv("../output/nuremberg_dataset_final.csv", index=False)
 print(master_df.head())
