@@ -12,3 +12,5 @@ matplotlib
 seaborn
 scikit-learn
 pyarrow
+huggingface_hub
+plotly
