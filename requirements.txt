@@ -1,0 +1,14 @@
+pandas
+numpy
+geopandas
+shapely
+rasterio
+rioxarray
+rasterstats
+pysal
+esda
+splot
+matplotlib
+seaborn
+scikit-learn
+pyarrow

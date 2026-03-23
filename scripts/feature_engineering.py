@@ -109,9 +109,8 @@ def main():
     # ----------------------------------------------------
 
     # Load ESA stats (precomputed from notebook)
-    wc_stats_2020 = pd.read_parquet("../data/nuremberg-urban-dynamics-data/wc_stats_2020.parquet")
-    wc_stats_2021 = pd.read_parquet("../data/nuremberg-urban-dynamics-data/wc_stats_2021.parquet")
-
+    wc_stats_2020 = pd.read_parquet("../data/hf_data/wc_stats_2020.parquet")
+    wc_stats_2021 = pd.read_parquet("../data/hf_data/wc_stats_2021.parquet")
     # ----------------------------------------------------
 
     # More temporal features

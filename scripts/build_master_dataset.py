@@ -1,14 +1,17 @@
-# %pip install pandas rioxarray
+import sys
+sys.path.append("../src")
+
+import os
 import rioxarray
 import matplotlib.pyplot as plt
-from geospatial.raster_utils import raster_to_df
+from nud.geospatial.raster_utils import raster_to_df
 
 # Define Nürnberg bounds
 bounds = (10.95, 49.38, 11.15, 49.52)
 
 # Load ESA WorldCover for both years
-esa_map_path_2020 = "ESA_WorldCover_10m_2020_v100_N48E009_Map.tif"
-esa_map_path_2021 = "ESA_WorldCover_10m_2021_v200_N48E009_Map.tif"
+esa_map_path_2020 = "../data/hf_data/ESA_WorldCover_10m_2020_v100_N48E009_Map.tif"
+esa_map_path_2021 = "../data/hf_data/ESA_WorldCover_10m_2021_v200_N48E009_Map.tif"
 esa_data_2020 = rioxarray.open_rasterio(esa_map_path_2020)
 esa_data_2021 = rioxarray.open_rasterio(esa_map_path_2021)
 
@@ -38,10 +41,10 @@ plt.show()
 plt.close()
 
 # Sentinel 2 data paht
-sentinel_2_2020_B11_path = "Sentinel2_B11_20200730.tiff"
-sentinel_2_2021_B11_path = "Sentinel2_B11_20210812.tiff"
-sentinel_2_2020_RED_path = "Sentinel2_B3_4_8_20200730.tiff"
-sentinel_2_2021_RED_path = "Sentinel2_B3_4_8_20210812.tiff"
+sentinel_2_2020_B11_path = "../data/hf_data/Sentinel2_B11_20210730.tiff"
+sentinel_2_2021_B11_path = "../data/hf_data/Sentinel2_B11_20210812.tiff"
+sentinel_2_2020_RED_path = "../data/hf_data/Sentinel2_B3_4_8_20210730.tiff"
+sentinel_2_2021_RED_path = "../data/hf_data/Sentinel2_B3_4_8_20210812.tiff"
 
 # Get sentinel data to match with esa map
 img_2020_B11 = rioxarray.open_rasterio(sentinel_2_2020_B11_path).rio.reproject_match(esa_map_2020)
@@ -75,6 +78,8 @@ master_df = master_df.rename(columns={
 
 print("¡Éxito! Columnas en el dataset:", master_df.columns.tolist())
 
+os.makedirs("../output", exist_ok=True)
+
 # Guardamos el CSV final
-master_df.to_csv("nuremberg_dataset_final.csv", index=False)
+master_df.to_csv("../output/nuremberg_dataset_final.csv", index=False)
 print(master_df.head())

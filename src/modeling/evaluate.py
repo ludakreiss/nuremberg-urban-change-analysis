@@ -2,8 +2,13 @@ import numpy as np
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 
-def evaluate_model(model, X_test, y_test):
-    y_pred = model.predict(X_test)
+def evaluate_model(model, X_test, y_test, threshold=0.5):
+    if hasattr(model, "predict_proba"):
+        y_prob = model.predict_proba(X_test)[:, 1]
+        y_pred = (y_prob >= threshold).astype(int)
+    else:
+        y_pred = model.predict(X_test)
+        y_prob = None
 
     results = {
         "accuracy": accuracy_score(y_test, y_pred),
@@ -12,7 +17,7 @@ def evaluate_model(model, X_test, y_test):
         "f1": f1_score(y_test, y_pred, zero_division=0),
     }
 
-    return results, y_pred
+    return results, y_pred, y_prob
 
 
 def false_change_rate(y_true, y_pred):
