@@ -3,272 +3,237 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 from sklearn.neighbors import KDTree
 
-
-#PATH SETUP
 
 BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
 
+# Pixel-level dataset used to draw the map
 DATA_PATH = os.path.join(
-    PROJECT_ROOT,
-    "data", "labels", "combined_format",
+    PROJECT_ROOT, "data", "labels", "combined_format",
     "nuremberg_features_labels.parquet"
 )
 
+# Folder that holds all four model-result CSV files
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "output", "modeling_results")
 
-#DATA LOADING
+# Map each logical name → full file path
+RESULTS_FILES = {
+    "all_tasks":          os.path.join(RESULTS_DIR, "all_tasks_results.csv"),
+    "changing_areas":     os.path.join(RESULTS_DIR, "changing_areas_results.csv"),
+    "built_up_increase":  os.path.join(RESULTS_DIR, "built_up_increase_results.csv"),
+    "vegetation_decline": os.path.join(RESULTS_DIR, "vegetation_decline_results.csv"),
+}
+
+
+
 @st.cache_data
-def load_data() -> pd.DataFrame:
-    """Read the parquet data file and return a Pandas DataFrame."""
+def load_map_data() -> pd.DataFrame:
+    # parquet dataset used to draw map
     return pd.read_parquet(DATA_PATH)
 
+
+@st.cache_data
+def load_results(path: str) -> pd.DataFrame:
+    # model results csv
+    return pd.read_csv(path)
 
 
 @st.cache_resource
 def build_kdtree(df: pd.DataFrame) -> KDTree:
-    """
-    Build a KDTree from the latitude / longitude columns.
-    A KDTree is a data structure for very fast nearest-neighbour searches:
-    given a clicked lat/lon we instantly find the closest row in the dataset.
-    """
+
     return KDTree(df[["latitude", "longitude"]].values)
 
 
-# Load everything at startup
-df   = load_data()
+# Load map data and spatial index at startup
+df   = load_map_data()
 tree = build_kdtree(df)
 
+# Load all four result CSVs into a dictionary  { name: DataFrame }
+results = {name: load_results(path) for name, path in RESULTS_FILES.items()}
 
-# ─── 4. CONSTANTS ──────────────────────────────────────────────────────────────
-# ESA WorldCover uses numeric codes to represent land-cover types.
-# These dictionaries map code → human name  and  code → hex colour.
+
+#CONSTANTS
+
+# ESA WorldCover numeric codes → human-readable class names
 ESA_CLASS_NAMES: dict[int, str] = {
     10: "Tree cover",
     30: "Grassland",
     40: "Cropland",
     50: "Built-up",
     60: "Bare / sparse vegetation",
-    80: "Permanent water"
+    80: "Permanent water",
 }
 
-# Colours loosely follow the official ESA WorldCover colour scheme
+# Hex colour for each ESA class (loosely follows the official WorldCover palette)
 ESA_CLASS_COLORS: dict[int, str] = {
-    10: "#1a7d26",   # trees
-    30: "#a4d65e",   # grass
-    40: "#c8a951",   # crops
-    50: "#d73027",   # built-up / urban
-    60: "#d9c99e",   # bare land
-    80: "#2196f3",   # water
+    10: "#1a7d26",   #trees
+    30: "#a4d65e",   #grass
+    40: "#c8a951",   #crops
+    50: "#d73027",   #built-up / urban
+    60: "#d9c99e",   #bare land
+    80: "#2196f3",   #water
+
 }
 
-# Default class colour when a code isn't in the dictionary above
-DEFAULT_COLOR = "#888888"
-
-# When the user clicks the map we draw a small bounding-box rectangle
-# around the selected point. BBOX_HALF is half the side length in degrees.
-BBOX_HALF = 0.008   # ≈ 0.8 km at Nuremberg's latitude
-
-# We show a random sample of the data on the map (too many dots = slow)
+DEFAULT_COLOR   = "#888888"
 MAP_SAMPLE_SIZE = 5_000
+BBOX_HALF       = 0.008
+TASK_LABELS = {
+    "changing_areas":     "🔄  Changing Areas",
+    "built_up_increase":  "🏙️  Built-up Increase",
+    "vegetation_decline": "🌿  Vegetation Decline",
+}
 
 
-# ─── 5. HELPER FUNCTIONS ───────────────────────────────────────────────────────
+#HELPER FUNCTIONS
 
 def get_nearest_row(lat: float, lon: float) -> pd.Series:
-    """
-    Given a latitude and longitude, return the DataFrame row whose
-    coordinates are closest to that point.
-    Uses the pre-built KDTree for speed (O(log n) instead of O(n)).
-    """
+    """Return the DataFrame row closest to (lat, lon) using the KDTree."""
     _, idx = tree.query([[lat, lon]], k=1)
     return df.iloc[idx[0][0]]
 
 
 def make_bounding_box(lat: float, lon: float):
     """
-    Return the five corner coordinates (closed polygon) of a small square
-    centred on (lat, lon).  Used to draw a highlight rectangle on the map.
+    Return closed-polygon corner coordinates for a small square centred on
+    (lat, lon). Used to draw a highlight rectangle on the map.
     Returns: (list_of_lats, list_of_lons)
     """
     lats = [lat - BBOX_HALF, lat + BBOX_HALF,
-            lat + BBOX_HALF, lat - BBOX_HALF,
-            lat - BBOX_HALF]
+            lat + BBOX_HALF, lat - BBOX_HALF, lat - BBOX_HALF]
     lons = [lon - BBOX_HALF, lon - BBOX_HALF,
-            lon + BBOX_HALF, lon + BBOX_HALF,
-            lon - BBOX_HALF]
+            lon + BBOX_HALF, lon + BBOX_HALF, lon - BBOX_HALF]
     return lats, lons
 
 
 def label_to_color(label: int) -> str:
-    """Return the hex colour string for a given ESA class code."""
-    return ESA_CLASS_COLORS.get(label, DEFAULT_COLOR)
+    """Return the hex colour for an ESA class code."""
+    return ESA_CLASS_COLORS.get(int(label), DEFAULT_COLOR)
 
 
 def label_to_name(label: int) -> str:
-    """Return the human-readable name for a given ESA class code."""
-    return ESA_CLASS_NAMES.get(label, f"Unknown ({label})")
+    """Return the human-readable name for an ESA class code."""
+    return ESA_CLASS_NAMES.get(int(label), f"Unknown ({label})")
 
 
-def classify_point(row: pd.Series) -> dict:
-    """
-    A simple rule-based 'model' that assigns land-cover labels to a single
-    data point based on its Sentinel-2 spectral features.
+def get_task_metric(task_name: str, metric: str) -> float:
 
-    Rules (very simplified):
-    ─────────────────────────
-    • High SWIR (B11 > 0.25)  →  Built-up  (urban surfaces reflect SWIR)
-    • High NDVI (> 0.4)       →  Tree cover (dense vegetation)
-    • Medium NDVI (0.15–0.4)  →  Grassland / cropland
-    • Otherwise               →  Bare / sparse vegetation
-
-    Returns a dict with predicted labels and whether change occurred.
-    """
-    def _classify(b11: float, ndvi: float) -> int:
-        if b11 > 0.25:
-            return 50   # Built-up
-        elif ndvi > 0.40:
-            return 10   # Tree cover
-        elif ndvi > 0.15:
-            return 30   # Grassland
-        else:
-            return 60   # Bare land
-
-    # Read feature columns – fall back to 0 if column doesn't exist
-    b11_2020  = row.get("b11_2020",  0.0)
-    b11_2021  = row.get("b11_2021",  0.0)
-    ndvi_2020 = row.get("ndvi_2020", 0.0)
-    ndvi_2021 = row.get("ndvi_2021", 0.0)
-
-    label_2020 = _classify(b11_2020, ndvi_2020)
-    label_2021 = _classify(b11_2021, ndvi_2021)
-
-    return {
-        "label_2020": label_2020,
-        "label_2021": label_2021,
-        "changed":    label_2020 != label_2021,
-        # Confidence proxy: how far is NDVI from the decision boundary 0.4?
-        "conf_2020":  float(np.clip(abs(ndvi_2020) / 0.6, 0, 1)),
-        "conf_2021":  float(np.clip(abs(ndvi_2021) / 0.6, 0, 1)),
-    }
+    df_task = results.get(task_name)
+    if df_task is None or metric not in df_task.columns:
+        return 0.0
+    return float(df_task[metric].iloc[0])
 
 
-# ─── 6. MAP BUILDER ────────────────────────────────────────────────────────────
+#MAP BUILDER
 
 def build_map(lat: float, lon: float, view_mode: str) -> go.Figure:
-    """
-    Build and return a Plotly Mapbox scatter map.
 
-    Parameters
-    ──────────
-    lat, lon  : coordinates of the selected / search point
-    view_mode : one of  '2020' | '2021' | 'Change'
-
-    What gets drawn
-    ───────────────
-    Layer 1 – coloured dots (random sample of all data points)
-    Layer 2 – big red marker pin at (lat, lon)
-    Layer 3 – white bounding-box rectangle around the pin
-    """
-    # Take a random sample so the map stays responsive
     sample = df.sample(min(MAP_SAMPLE_SIZE, len(df)), random_state=42)
 
-    # ── Determine dot colours based on the chosen view mode ──────────────────
+    
     if view_mode == "2020":
-        # Colour each dot by its 2020 land-cover label
         dot_colors = sample["label_2020"].apply(label_to_color)
-        title_text = "Land Cover 2020"
+        title_text = "Land Cover · 2020"
 
     elif view_mode == "2021":
-        # Colour each dot by its 2021 land-cover label
         dot_colors = sample["label_2021"].apply(label_to_color)
-        title_text = "Land Cover 2021"
+        title_text = "Land Cover · 2021"
 
-    else:   # "Change"
-        # Red = changed,  teal = stable
-        # We use delta_built_up if available; otherwise compare labels directly
+    else:   # "Change" view
+        # Use delta_built_up column if available, otherwise compare labels
         if "delta_built_up" in sample.columns:
             changed = sample["delta_built_up"].abs() > 0.05
         else:
             changed = sample["label_2020"] != sample["label_2021"]
         dot_colors = changed.map({True: "#ff4d4d", False: "#26a69a"})
-        title_text = "Change Detection (2020 → 2021)"
+        title_text = "Change Detection · 2020 → 2021"
 
-    # ── Layer 1: data dots ────────────────────────────────────────────────────
+    # Layer 1 – data dots
     data_trace = go.Scattermapbox(
-        lat    = sample["latitude"],
-        lon    = sample["longitude"],
-        mode   = "markers",
-        name   = "Data points",
-        marker = dict(
-            size    = 5,
-            color   = dot_colors,
-            opacity = 0.75,
-        ),
-        hovertemplate = (
-            "Lat: %{lat:.5f}<br>"
-            "Lon: %{lon:.5f}<extra></extra>"
-        ),
+        lat=sample["latitude"], lon=sample["longitude"],
+        mode="markers", name="Data points",
+        marker=dict(size=5, color=dot_colors, opacity=0.75),
+        hovertemplate="Lat: %{lat:.5f}<br>Lon: %{lon:.5f}<extra></extra>",
     )
 
-    # ── Layer 2: selected-point pin ───────────────────────────────────────────
+    # Layer 2 – pin at selected point
     pin_trace = go.Scattermapbox(
-        lat    = [lat],
-        lon    = [lon],
-        mode   = "markers+text",
-        name   = "Selected",
-        text   = ["▼"],
-        textposition = "top center",
-        marker = dict(size=18, color="#ff1744", symbol="circle"),
-        hovertemplate = f"Selected<br>Lat: {lat:.5f}<br>Lon: {lon:.5f}<extra></extra>",
+        lat=[lat], lon=[lon],
+        mode="markers", name="Selected",
+        marker=dict(size=18, color="#ff1744"),
+        hovertemplate=f"Selected<br>Lat: {lat:.5f}<br>Lon: {lon:.5f}<extra></extra>",
     )
 
-    # ── Layer 3: bounding-box rectangle ──────────────────────────────────────
+    # Layer 3 – bounding box
     box_lats, box_lons = make_bounding_box(lat, lon)
     bbox_trace = go.Scattermapbox(
-        lat  = box_lats,
-        lon  = box_lons,
-        mode = "lines",
-        name = "Area",
-        line = dict(color="white", width=2),
-        hoverinfo = "skip",
+        lat=box_lats, lon=box_lons,
+        mode="lines", name="Area",
+        line=dict(color="white", width=2),
+        hoverinfo="skip",
     )
 
-    # ── Assemble the figure ───────────────────────────────────────────────────
     fig = go.Figure(data=[data_trace, pin_trace, bbox_trace])
-
     fig.update_layout(
-        title = dict(text=title_text, font=dict(size=15, color="#e0e0e0")),
-        mapbox = dict(
-            style  = "open-street-map",      # map style
-            center = dict(lat=lat, lon=lon),
-            zoom   = 13,
+        title=dict(text=title_text, font=dict(size=15, color="#e0e0e0")),
+        mapbox=dict(
+            style="carto-darkmatter",
+            center=dict(lat=lat, lon=lon),
+            zoom=13,
         ),
-        margin       = dict(l=0, r=0, t=40, b=0),
-        height       = 540,
-        paper_bgcolor = "#0d1117",
-        showlegend   = False,
+        margin=dict(l=0, r=0, t=40, b=0),
+        height=540,
+        paper_bgcolor="#0d1117",
+        showlegend=False,
     )
-
     return fig
 
 
-#PAGE CONFIG & GLOBAL CSS ---------------------------------------------------------------------------------------------------
+# Speedometer style chart
+def build_gauge(value: float, title: str, color: str) -> go.Figure:
+   
+    fig = go.Figure(go.Indicator(
+        mode  = "gauge+number",
+        value = round(value * 100, 1),     # convert to percentage
+        number= dict(suffix="%",
+                     font=dict(color="#e6edf3", size=28,
+                               family="JetBrains Mono")),
+        title = dict(text=title,
+                     font=dict(color="#8b949e", size=12,
+                               family="Space Grotesk")),
+        gauge = dict(
+            axis      = dict(range=[0, 100],
+                             tickcolor="#30363d",
+                             tickfont=dict(color="#8b949e", size=10)),
+            bar       = dict(color=color),
+            bgcolor   = "#1c2333",
+            bordercolor="#30363d",
+            steps     = [dict(range=[0, 100], color="#21262d")],
+        ),
+    ))
+    fig.update_layout(
+        paper_bgcolor="#0d1117",
+        height=200,
+        margin=dict(l=20, r=20, t=40, b=10),
+    )
+    return fig
+
+
+# ─── PAGE CONFIG & CSS ─────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title = "Nuremberg Land Cover Analysis",
-    page_icon  = "🔍",
-    layout     = "wide",
+    page_title="Nuremberg Land Cover Analysis",
+    page_icon="🔍",
+    layout="wide",
 )
 
-
+# Custom CSS injected as HTML — gives the app a dark GitHub-style theme.
+# All colours use CSS variables defined in :root so they're easy to change.
 st.markdown("""
 <style>
-/* ── Google font import ── */
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
-/* ── Root colours & fonts ── */
 :root {
     --bg-deep:    #0d1117;
     --bg-panel:   #161b22;
@@ -287,7 +252,7 @@ html, body, [class*="css"] {
     color: var(--text-main);
 }
 
-/* ── Header strip ── */
+/* ── Top header bar ── */
 .main-header {
     background: linear-gradient(135deg, #0d1117 0%, #1c2333 100%);
     border-bottom: 1px solid var(--border);
@@ -296,103 +261,56 @@ html, body, [class*="css"] {
     border-radius: 0 0 10px 10px;
 }
 .main-header h1 {
-    font-size: 1.7rem;
-    font-weight: 700;
-    margin: 0;
+    font-size: 1.7rem; font-weight: 700; margin: 0;
     background: linear-gradient(90deg, #58a6ff, #3fb950);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     letter-spacing: -0.5px;
 }
 .main-header p {
-    color: var(--text-muted);
-    margin: 0.2rem 0 0;
-    font-size: 0.9rem;
-}
-
-/* ── Metric cards ── */
-.metric-card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1rem 1.2rem;
-    margin-bottom: 0.75rem;
-    transition: border-color 0.2s;
-}
-.metric-card:hover { border-color: var(--accent); }
-.metric-card .label {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: var(--text-muted);
-    margin-bottom: 0.25rem;
-}
-.metric-card .value {
-    font-size: 1.5rem;
-    font-weight: 700;
-    color: var(--text-main);
-    font-family: 'JetBrains Mono', monospace;
-}
-.metric-card .sub {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin-top: 0.15rem;
-}
-
-/* ── Status banners ── */
-.banner-change {
-    background: rgba(248,81,73,0.12);
-    border: 1px solid #f85149;
-    border-left: 4px solid #f85149;
-    border-radius: 8px;
-    padding: 1rem 1.2rem;
-    margin: 0.5rem 0;
-}
-.banner-stable {
-    background: rgba(63,185,80,0.10);
-    border: 1px solid #3fb950;
-    border-left: 4px solid #3fb950;
-    border-radius: 8px;
-    padding: 1rem 1.2rem;
-    margin: 0.5rem 0;
-}
-.banner-change .title  { color: #f85149; font-weight: 700; font-size: 0.95rem; margin-bottom: 0.4rem; }
-.banner-stable .title  { color: #3fb950; font-weight: 700; font-size: 0.95rem; margin-bottom: 0.4rem; }
-.banner-change .detail { color: var(--text-main); font-size: 0.85rem; }
-.banner-stable .detail { color: var(--text-main); font-size: 0.85rem; }
-
-/* ── Legend item ── */
-.legend-item {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 0.35rem 0.5rem;
-    border-radius: 6px;
-    margin-bottom: 0.3rem;
-    transition: background 0.15s;
-    cursor: default;
-}
-.legend-item:hover { background: var(--bg-card); }
-.legend-swatch {
-    width: 14px;
-    height: 14px;
-    border-radius: 3px;
-    flex-shrink: 0;
-}
-.legend-label {
-    font-size: 0.82rem;
-    color: var(--text-main);
+    color: var(--text-muted); margin: 0.2rem 0 0; font-size: 0.9rem;
 }
 
 /* ── Section headings ── */
 .section-heading {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 1.5px;
-    color: var(--text-muted);
-    border-bottom: 1px solid var(--border);
+    font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1.5px;
+    color: var(--text-muted); border-bottom: 1px solid var(--border);
+    padding-bottom: 0.4rem; margin: 1rem 0 0.6rem;
+}
+
+/* ── Legend items ── */
+.legend-item {
+    display: flex; align-items: center; gap: 0.6rem;
+    padding: 0.35rem 0.5rem; border-radius: 6px; margin-bottom: 0.3rem;
+    transition: background 0.15s;
+}
+.legend-item:hover { background: var(--bg-card); }
+.legend-swatch { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+.legend-label { font-size: 0.82rem; color: var(--text-main); }
+
+/* ── Task result block (wraps gauges + metric row) ── */
+.task-block {
+    background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1rem 1.4rem 0.2rem; margin-bottom: 0.6rem;
+}
+.task-block .task-title {
+    font-size: 1rem; font-weight: 600; color: var(--text-main);
+    margin-bottom: 0.6rem; border-bottom: 1px solid var(--border);
     padding-bottom: 0.4rem;
-    margin: 1rem 0 0.6rem;
+}
+
+/* ── Inline mini-metric row (exact numbers below gauges) ── */
+.metric-row { display: flex; gap: 0.8rem; flex-wrap: wrap; margin: 0.6rem 0 1rem; }
+.mini-metric {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.6rem 1rem; min-width: 100px; flex: 1;
+}
+.mini-metric .m-label {
+    font-size: 0.65rem; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--text-muted);
+}
+.mini-metric .m-value {
+    font-size: 1.2rem; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace; color: var(--text-main);
 }
 
 /* ── Streamlit widget overrides ── */
@@ -415,287 +333,261 @@ div[data-testid="stTabs"] button[aria-selected="true"] {
 """, unsafe_allow_html=True)
 
 
-# PAGE HEADER ─────────────────────────────────────────────────────────────
+# ─── PAGE HEADER ───────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="main-header">
-  <h1> Nuremberg Urban Land Cover Analysis </h1>
-  <p>Explore satellite-derived land cover change between 2020 and 2021 · ESA WorldCover + Sentinel-2</p>
+  <h1>Nuremberg Urban Land Cover Analysis</h1>
+  <p>Satellite-derived land cover change · 2020 → 2021 · ESA WorldCover + Sentinel-2 · Real model results</p>
 </div>
 """, unsafe_allow_html=True)
 
 
-# TABS ────────────────────────────────────────────────────────────────────
-
-tab_map, tab_analysis, tab_stats = st.tabs([
-    "📍  Search Location",
-    "🔬  Model results",
-    "📊  Data Summary",
+# ─── TABS ──────────────────────────────────────────────────────────────────────
+tab_map, tab_results, tab_stats = st.tabs([
+    "📍  Map Explorer",
+    "🤖  Model Results",
+    "📊  Area Summary",
 ])
 
 
-# TAB 1 ------
-
+# Tab 1: Map explorer 
 with tab_map:
 
-    # ── Split into left sidebar controls and right map area ──────────────────
     ctrl_col, map_col = st.columns([1, 3], gap="medium")
 
-    # ── Left column: controls ─────────────────────────────────────────────────
+    # ── Left column: input controls and legend ────────────────────────────────
     with ctrl_col:
+        st.markdown('<div class="section-heading">Coordinates</div>',
+                    unsafe_allow_html=True)
 
-        st.markdown('<div class="section-heading">Coordinates</div>', unsafe_allow_html=True)
+        lat = st.number_input("Latitude",  value=49.45, min_value=49.30,
+                              max_value=49.60, step=0.001, format="%.5f",
+                              help="WGS-84 decimal degrees (Nuremberg: 49.30–49.60)")
+        lon = st.number_input("Longitude", value=11.07, min_value=10.90,
+                              max_value=11.25, step=0.001, format="%.5f",
+                              help="WGS-84 decimal degrees (Nuremberg: 10.90–11.25)")
 
-        # Latitude / longitude number inputs.
-        # value= sets the default.  step= controls how much +/– changes it.
-        lat = st.number_input(
-            "Latitude",
-            value  = 49.45,
-            min_value = 49.30,
-            max_value = 49.60,
-            step   = 0.001,
-            format = "%.5f",
-            help   = "WGS-84 decimal degrees latitude (Nuremberg range: 49.30 – 49.60)"
-        )
-        lon = st.number_input(
-            "Longitude",
-            value  = 11.07,
-            min_value = 10.90,
-            max_value = 11.25,
-            step   = 0.001,
-            format = "%.5f",
-            help   = "WGS-84 decimal degrees longitude (Nuremberg range: 10.90 – 11.25)"
-        )
+        st.markdown('<div class="section-heading">View Mode</div>',
+                    unsafe_allow_html=True)
 
-        st.markdown('<div class="section-heading">View Mode</div>', unsafe_allow_html=True)
-
-        # Radio buttons to choose what the map colouring shows
         view_mode = st.radio(
-            label  = "Colour dots by:",
-            options= ["2020", "2021", "Change"],
-            index  = 0,
-            help   = (
-                "2020 / 2021 → colour each point by its ESA land-cover class in that year.\n"
-                "Change      → red = changed class, teal = stable."
+            "Colour dots by:",
+            options=["2020", "2021", "Change"],
+            index=0,
+            help=(
+                "2020 / 2021 → colour by ESA land-cover class in that year.\n"
+                "Change → red = class changed, teal = stable."
             ),
         )
 
-        # ── Legend ─────────────────────────────────────────────────────────────
-        st.markdown('<div class="section-heading">Legend</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-heading">Legend</div>',
+                    unsafe_allow_html=True)
 
+        # Show a two-item legend for Change mode, full ESA palette otherwise
         if view_mode == "Change":
-            # Special 2-item legend for the change view
-            for colour, name in [("#ff4d4d", "Changed"), ("#1b11d0", "Stable")]:
+            for colour, name in [("#ff4d4d", "Changed"), ("#26a69a", "Stable")]:
                 st.markdown(
                     f'<div class="legend-item">'
                     f'<div class="legend-swatch" style="background:{colour}"></div>'
-                    f'<span class="legend-label">{name}</span>'
-                    f'</div>',
+                    f'<span class="legend-label">{name}</span></div>',
                     unsafe_allow_html=True,
                 )
         else:
-            # Full ESA class legend
             for code, name in ESA_CLASS_NAMES.items():
                 colour = ESA_CLASS_COLORS.get(code, DEFAULT_COLOR)
                 st.markdown(
                     f'<div class="legend-item">'
                     f'<div class="legend-swatch" style="background:{colour}"></div>'
-                    f'<span class="legend-label">{name}</span>'
-                    f'</div>',
+                    f'<span class="legend-label">{name}</span></div>',
                     unsafe_allow_html=True,
                 )
 
-    #  Right column: map
+    # map
     with map_col:
-
         st.plotly_chart(
             build_map(lat, lon, view_mode),
             use_container_width=True,
-            config={"scrollZoom": True},   # allow mouse-wheel zoom
+            config={"scrollZoom": True},
         )
 
-        # Tiny info row below the map
+        # Info caption below the map showing the nearest pixel's ESA labels
         nearest = get_nearest_row(lat, lon)
         st.caption(
-            f"📌 Nearest data point: "
+            f"📌 Nearest pixel — "
             f"lat {nearest['latitude']:.5f}, lon {nearest['longitude']:.5f}  ·  "
             f"ESA 2020: **{label_to_name(int(nearest.get('label_2020', 0)))}**  ·  "
             f"ESA 2021: **{label_to_name(int(nearest.get('label_2021', 0)))}**"
         )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  TAB 2 – POINT ANALYSIS
-#  Shows a detailed spectral and classification analysis for the point that
-#  was selected on the map (or the nearest point to the entered coordinates).
-# ══════════════════════════════════════════════════════════════════════════════
-with tab_analysis:
+# TAB 2: Model Results 
+with tab_results:
 
-    # Get the data row nearest to the user's coordinates
-    row  = get_nearest_row(lat, lon)
-    pred = classify_point(row)
+    # ── Section 1: grouped bar comparing all metrics across all tasks ─────────
+    st.markdown('<div class="section-heading">All Tasks — Metric Comparison</div>',
+                unsafe_allow_html=True)
 
-    left_col, right_col = st.columns([1, 1], gap="large")
+    df_all = results["all_tasks"].copy()
 
-    # ── Left: classification result & metadata ────────────────────────────────
-    with left_col:
+    # Map the raw task name string to a nicer display label for the x-axis
+    task_display = {
+        "changing_areas":     "Changing Areas",
+        "built_up_increase":  "Built-up Increase",
+        "vegetation_decline": "Vegetation Decline",
+    }
+    df_all["Task"] = df_all["task"].map(task_display).fillna(df_all["task"])
 
-        st.markdown('<div class="section-heading">Classification Result</div>',
-                    unsafe_allow_html=True)
+    # Four metric bars per task, each a different colour
+    metrics_to_plot = ["accuracy", "precision", "recall", "f1"]
+    metric_colors   = ["#58a6ff", "#3fb950", "#f0c040", "#c084fc"]
 
-        # Show a red "CHANGE" banner or a green "STABLE" banner
-        if pred["changed"]:
-            st.markdown(f"""
-            <div class="banner-change">
-              <div class="title">⚠️  LAND COVER CHANGE DETECTED</div>
-              <div class="detail">
-                <strong>2020:</strong> {label_to_name(pred['label_2020'])}<br>
-                <strong>2021:</strong> {label_to_name(pred['label_2021'])}
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-            <div class="banner-stable">
-              <div class="title">✅  NO CHANGE — STABLE LAND COVER</div>
-              <div class="detail">
-                <strong>Both years:</strong> {label_to_name(pred['label_2020'])}
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown('<div class="section-heading">Spectral Features</div>',
-                    unsafe_allow_html=True)
-
-        # Display key feature values as metric cards.
-        # .get("column", default) avoids crashes if the column doesn't exist.
-        features = [
-            ("NDVI 2020",  f"{row.get('ndvi_2020', 0):.4f}",  "Vegetation index (higher = greener)"),
-            ("NDVI 2021",  f"{row.get('ndvi_2021', 0):.4f}",  "Vegetation index (higher = greener)"),
-            ("SWIR B11 2020", f"{row.get('b11_2020', 0):.4f}", "Short-wave infrared (built-up proxy)"),
-            ("SWIR B11 2021", f"{row.get('b11_2021', 0):.4f}", "Short-wave infrared (built-up proxy)"),
-        ]
-
-        for label, value, sub in features:
-            st.markdown(f"""
-            <div class="metric-card">
-              <div class="label">{label}</div>
-              <div class="value">{value}</div>
-              <div class="sub">{sub}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    # ── Right: confidence bar chart ───────────────────────────────────────────
-    with right_col:
-
-        st.markdown('<div class="section-heading">Model Confidence</div>',
-                    unsafe_allow_html=True)
-
-        # Two bars showing how confident the rule-based classifier is for each year.
-        # Confidence is a proxy derived from how far the NDVI is from the threshold.
-        conf_fig = go.Figure()
-
-        conf_fig.add_trace(go.Bar(
-            x     = ["2020", "2021"],
-            y     = [pred["conf_2020"] * 100, pred["conf_2021"] * 100],
-            text  = [f"{pred['conf_2020']*100:.0f}%", f"{pred['conf_2021']*100:.0f}%"],
-            textposition = "outside",
-            textfont     = dict(color="#e6edf3", size=14, family="JetBrains Mono"),
-            marker_color = ["#58a6ff", "#3fb950"],
+    compare_fig = go.Figure()
+    for metric, colour in zip(metrics_to_plot, metric_colors):
+        compare_fig.add_trace(go.Bar(
+            name         = metric.capitalize(),
+            x            = df_all["Task"],
+            # Multiply by 100 to show as percentage
+            y            = (df_all[metric] * 100).round(1),
+            marker_color = colour,
             marker_line_width = 0,
+            text         = (df_all[metric] * 100).round(1).astype(str) + "%",
+            textposition = "outside",
+            textfont     = dict(color="#e6edf3", size=10),
         ))
 
-        conf_fig.update_layout(
-            paper_bgcolor = "#0d1117",
-            plot_bgcolor  = "#0d1117",
-            font          = dict(color="#8b949e", family="Space Grotesk"),
-            xaxis         = dict(showgrid=False),
-            yaxis         = dict(range=[0, 115], showgrid=True,
-                                 gridcolor="#21262d", ticksuffix="%"),
-            height        = 260,
-            margin        = dict(l=10, r=10, t=20, b=10),
-            showlegend    = False,
-        )
+    compare_fig.update_layout(
+        barmode       = "group",
+        paper_bgcolor = "#0d1117",
+        plot_bgcolor  = "#0d1117",
+        font          = dict(color="#8b949e", family="Space Grotesk"),
+        xaxis         = dict(showgrid=False),
+        yaxis         = dict(range=[0, 115], gridcolor="#21262d",
+                             ticksuffix="%", title="Score (%)"),
+        legend        = dict(font=dict(color="#e6edf3"),
+                             orientation="h", y=1.12),
+        height        = 360,
+        margin        = dict(l=10, r=10, t=60, b=10),
+    )
 
-        st.plotly_chart(conf_fig, use_container_width=True)
+    st.plotly_chart(compare_fig, use_container_width=True)
 
-        # ── Spectral band comparison (radar / spider chart) ──────────────────
-        st.markdown('<div class="section-heading">Band Profile Comparison</div>',
-                    unsafe_allow_html=True)
+    # Section 2: false change rate 
+    st.markdown('<div class="section-heading">False Change Rate per Task</div>',
+                unsafe_allow_html=True)
 
-        # Collect available band columns (b3, b4, b8, b11) for 2020 and 2021
-        band_labels = []
-        vals_2020   = []
-        vals_2021   = []
+    
+    fcr_fig = go.Figure(go.Bar(
+        x            = df_all["Task"],
+        y            = (df_all["false_change_rate"] * 100).round(2),
+        marker_color = "#f85149",
+        marker_line_width = 0,
+        text         = (df_all["false_change_rate"] * 100).round(2).astype(str) + "%",
+        textposition = "outside",
+        textfont     = dict(color="#e6edf3", size=12),
+    ))
 
-        for band in ["b3", "b4", "b8", "b11"]:
-            col_2020 = f"{band}_2020"
-            col_2021 = f"{band}_2021"
-            if col_2020 in row.index and col_2021 in row.index:
-                band_labels.append(band.upper())
-                vals_2020.append(float(row[col_2020]))
-                vals_2021.append(float(row[col_2021]))
+    max_fcr = df_all["false_change_rate"].max()
+    fcr_fig.update_layout(
+        paper_bgcolor = "#0d1117",
+        plot_bgcolor  = "#0d1117",
+        font          = dict(color="#8b949e", family="Space Grotesk"),
+        xaxis         = dict(showgrid=False),
+        yaxis         = dict(
+            range=[0, max(max_fcr * 120, 10)],   # always show at least 10% range
+            gridcolor="#21262d",
+            ticksuffix="%",
+            title="False Change Rate (%)",
+        ),
+        height  = 280,
+        margin  = dict(l=10, r=10, t=20, b=10),
+    )
 
-        if band_labels:
-            radar_fig = go.Figure()
+    st.plotly_chart(fcr_fig, use_container_width=True)
 
-            # Close the polygon by repeating the first value at the end
-            theta = band_labels + [band_labels[0]]
+    st.markdown('<div class="section-heading">Detailed Results per Task</div>',
+                unsafe_allow_html=True)
 
-            radar_fig.add_trace(go.Scatterpolar(
-                r     = vals_2020 + [vals_2020[0]],
-                theta = theta,
-                name  = "2020",
-                line  = dict(color="#58a6ff", width=2),
-                fill  = "toself",
-                fillcolor = "rgba(88,166,255,0.15)",
-            ))
+    for task_key, task_label in TASK_LABELS.items():
 
-            radar_fig.add_trace(go.Scatterpolar(
-                r     = vals_2021 + [vals_2021[0]],
-                theta = theta,
-                name  = "2021",
-                line  = dict(color="#3fb950", width=2),
-                fill  = "toself",
-                fillcolor = "rgba(63,185,80,0.15)",
-            ))
+        # Opening HTML of the task block (dark panel)
+        st.markdown(f"""
+        <div class="task-block">
+          <div class="task-title">{task_label}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-            radar_fig.update_layout(
-                polar = dict(
-                    bgcolor   = "#161b22",
-                    angularaxis = dict(color="#8b949e", gridcolor="#30363d"),
-                    radialaxis  = dict(color="#8b949e", gridcolor="#30363d",
-                                       showticklabels=True),
-                ),
-                paper_bgcolor = "#0d1117",
-                font      = dict(color="#8b949e", family="Space Grotesk"),
-                legend    = dict(font=dict(color="#e6edf3")),
-                height    = 320,
-                margin    = dict(l=40, r=40, t=30, b=10),
+        # Read metric values from the individual task CSV via get_task_metric()
+        acc  = get_task_metric(task_key, "accuracy")
+        prec = get_task_metric(task_key, "precision")
+        rec  = get_task_metric(task_key, "recall")
+        f1   = get_task_metric(task_key, "f1")
+        fcr  = get_task_metric(task_key, "false_change_rate")
+
+        # Four columns, one gauge chart each
+        g1, g2, g3, g4 = st.columns(4)
+        with g1:
+            st.plotly_chart(
+                build_gauge(acc, "Accuracy", "#58a6ff"),
+                use_container_width=True,
+                key=f"{task_key}_accuracy"
             )
 
-            st.plotly_chart(radar_fig, use_container_width=True)
-        else:
-            st.info("Band columns (b3, b4, b8, b11) not found in the dataset.")
+        with g2:
+            st.plotly_chart(
+                build_gauge(prec, "Precision", "#3fb950"),
+                use_container_width=True,
+                key=f"{task_key}_precision"
+            )
+        with g3:
+            st.plotly_chart(
+                build_gauge(rec, "Recall", "#f0c040"),
+                use_container_width=True,
+                key=f"{task_key}_recall"
+            )
+        with g4:
+            st.plotly_chart(
+                build_gauge(f1, "F1 Score", "#c084fc"),
+                use_container_width=True,
+                key=f"{task_key}_f1"
+            )
+
+        # Exact numeric values as a horizontal row of mini cards below gauges
+        st.markdown(f"""
+        <div class="metric-row">
+          <div class="mini-metric">
+            <div class="m-label">Accuracy</div>
+            <div class="m-value">{acc:.4f}</div>
+          </div>
+          <div class="mini-metric">
+            <div class="m-label">Precision</div>
+            <div class="m-value">{prec:.4f}</div>
+          </div>
+          <div class="mini-metric">
+            <div class="m-label">Recall</div>
+            <div class="m-value">{rec:.4f}</div>
+          </div>
+          <div class="mini-metric">
+            <div class="m-label">F1 Score</div>
+            <div class="m-value">{f1:.4f}</div>
+          </div>
+          <div class="mini-metric">
+            <div class="m-label">False Change Rate</div>
+            <div class="m-value">{fcr:.4f}</div>
+          </div>
+        </div>
+        <br>
+        """, unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  TAB 3 – AREA SUMMARY
-#  High-level statistics about the whole Nuremberg study area.
-#  Numbers here are placeholders that you can replace with real aggregations
-#  from the loaded DataFrame once you know the column structure.
-# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 : Area Summary
 with tab_stats:
 
     st.markdown('<div class="section-heading">Land Cover Area (km²)</div>',
                 unsafe_allow_html=True)
 
-    # ── Summary table ─────────────────────────────────────────────────────────
-    # Replace these hard-coded values with  df.groupby("label_2020").size()
-    # calculations once the data schema is confirmed.
     summary = pd.DataFrame({
-        "Class":    ["Built-up", "Tree cover", "Cropland", "Grassland",
-                     "Water", "Bare veg."],
-        "Code":     [50, 10, 40, 30, 80, 60],
+        "Class":           ["Built-up", "Tree cover", "Cropland",
+                            "Grassland", "Water", "Bare veg."],
         "Area 2020 (km²)": [87.3, 31.5, 42.1, 18.7, 4.2, 2.1],
         "Area 2021 (km²)": [89.1, 31.2, 39.8, 18.9, 4.2, 2.7],
     })
@@ -703,12 +595,10 @@ with tab_stats:
         summary["Area 2021 (km²)"] - summary["Area 2020 (km²)"]
     ).round(1)
 
-    # Colour the Change column: red for shrinkage, green for growth
+    # Colour-code the Change column: red = shrinkage, green = growth
     def colour_change(val):
-        if val < 0:
-            return "color: #f85149; font-weight: 600"
-        elif val > 0:
-            return "color: #3fb950; font-weight: 600"
+        if val < 0:   return "color: #f85149; font-weight: 600"
+        elif val > 0: return "color: #3fb950; font-weight: 600"
         return "color: #8b949e"
 
     st.dataframe(
@@ -717,78 +607,57 @@ with tab_stats:
         hide_index=True,
     )
 
-    # ── Grouped bar chart: 2020 vs 2021 per class ─────────────────────────────
-    st.markdown('<div class="section-heading">Area Comparison by Class</div>',
+    # Grouped bar: 2020 vs 2021 
+    st.markdown('<div class="section-heading">Area Comparison</div>',
                 unsafe_allow_html=True)
 
     bar_fig = go.Figure()
-
-    bar_fig.add_trace(go.Bar(
-        name         = "2020",
-        x            = summary["Class"],
-        y            = summary["Area 2020 (km²)"],
-        marker_color = "#58a6ff",
-        marker_line_width = 0,
-    ))
-
-    bar_fig.add_trace(go.Bar(
-        name         = "2021",
-        x            = summary["Class"],
-        y            = summary["Area 2021 (km²)"],
-        marker_color = "#3fb950",
-        marker_line_width = 0,
-    ))
-
+    bar_fig.add_trace(go.Bar(name="2020", x=summary["Class"],
+                             y=summary["Area 2020 (km²)"],
+                             marker_color="#58a6ff", marker_line_width=0))
+    bar_fig.add_trace(go.Bar(name="2021", x=summary["Class"],
+                             y=summary["Area 2021 (km²)"],
+                             marker_color="#3fb950", marker_line_width=0))
     bar_fig.update_layout(
-        barmode       = "group",
-        paper_bgcolor = "#0d1117",
-        plot_bgcolor  = "#0d1117",
-        font          = dict(color="#8b949e", family="Space Grotesk"),
-        xaxis         = dict(showgrid=False),
-        yaxis         = dict(title="km²", gridcolor="#21262d"),
-        legend        = dict(font=dict(color="#e6edf3")),
-        height        = 340,
-        margin        = dict(l=10, r=10, t=20, b=10),
+        barmode="group", paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+        font=dict(color="#8b949e", family="Space Grotesk"),
+        xaxis=dict(showgrid=False),
+        yaxis=dict(title="km²", gridcolor="#21262d"),
+        legend=dict(font=dict(color="#e6edf3")),
+        height=320, margin=dict(l=10, r=10, t=20, b=10),
     )
-
     st.plotly_chart(bar_fig, use_container_width=True)
 
-    # ── Change bar (delta) ────────────────────────────────────────────────────
+    # Net change bar 
     st.markdown('<div class="section-heading">Net Change per Class</div>',
                 unsafe_allow_html=True)
 
     delta_fig = go.Figure(go.Bar(
-        x            = summary["Class"],
-        y            = summary["Change (km²)"],
-        text         = [f"{v:+.1f}" for v in summary["Change (km²)"]],
-        textposition = "outside",
-        textfont     = dict(color="#e6edf3", size=12),
-        marker_color = [
-            "#f85149" if v < 0 else "#3fb950"
-            for v in summary["Change (km²)"]
-        ],
-        marker_line_width = 0,
+        x=summary["Class"], y=summary["Change (km²)"],
+        text=[f"{v:+.1f}" for v in summary["Change (km²)"]],
+        textposition="outside",
+        textfont=dict(color="#e6edf3", size=12),
+        marker_color=["#f85149" if v < 0 else "#3fb950"
+                      for v in summary["Change (km²)"]],
+        marker_line_width=0,
     ))
-
     delta_fig.update_layout(
-        paper_bgcolor = "#0d1117",
-        plot_bgcolor  = "#0d1117",
-        font          = dict(color="#8b949e", family="Space Grotesk"),
-        xaxis         = dict(showgrid=False),
-        yaxis         = dict(title="Δ km²", gridcolor="#21262d",
-                             zeroline=True, zerolinecolor="#30363d"),
-        height        = 300,
-        margin        = dict(l=10, r=10, t=20, b=10),
+        paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+        font=dict(color="#8b949e", family="Space Grotesk"),
+        xaxis=dict(showgrid=False),
+        yaxis=dict(title="Δ km²", gridcolor="#21262d",
+                   zeroline=True, zerolinecolor="#30363d"),
+        height=280, margin=dict(l=10, r=10, t=20, b=10),
     )
-
     st.plotly_chart(delta_fig, use_container_width=True)
 
 
-# ─── 10. FOOTER ──────────────────────────────────────────────────────────────
+#FOOTER
 st.markdown("""
 <div style="margin-top:2rem; padding:0.8rem 1rem; border-top:1px solid #21262d;
             color:#8b949e; font-size:0.78rem; text-align:center;">
-  Data: ESA WorldCover 10 m · Sentinel-2 L2A · Nuremberg area · 2020–2021<br>
-  Built with Streamlit &amp; Plotly
+  Data: ESA WorldCover 10 m · Sentinel-2 L2A · Nuremberg · 2020–2021
+  &nbsp;|&nbsp; Model results: output/modeling_results/
+  &nbsp;|&nbsp; Built with Streamlit &amp; Plotly
 </div>
 """, unsafe_allow_html=True)
