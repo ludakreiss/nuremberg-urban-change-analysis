@@ -2,15 +2,21 @@
 This repository contains the code and analysis for a project focused on detecting and understanding urban land cover changes in Nuremberg, Germany, between 2020 and 2021. The analysis leverages satellite imagery from ESA WorldCover and Sentinel-2 to train machine learning models that can predict urban development, vegetation decline, and other significant changes. The project includes interactive dashboards built with Streamlit for visual exploration of the data and model results.
 
 ## Features
-Satellite Data Integration: Combines ESA WorldCover land cover maps with Sentinel-2 multispectral imagery.
-Feature Engineering: Calculates spectral indices (NDVI, NDBI), temporal differences, and spatial autocorrelation features to capture land cover dynamics.
-Machine Learning Pipeline: Implements a full modeling pipeline, including data preparation, spatial cross-validation, and training of Logistic Regression and Random Forest models.
-Change Detection Tasks: Trains models to perform three distinct tasks:
-Identify any significant land cover change.
-Detect increases in built-up areas.
-Pinpoint areas of vegetation decline.
-Robust Evaluation: Evaluates models using standard classification metrics and a custom False Change Rate to measure precision in change detection.
-Interactive Dashboards: Features two Streamlit applications for visualizing data, model predictions, and evaluation results.
+* Satellite Data Integration: Combines ESA WorldCover land cover maps with Sentinel-2 multispectral imagery.
+
+* Feature Engineering: Calculates spectral indices (NDVI, NDBI), temporal differences, and spatial autocorrelation features to capture land cover dynamics.
+* Machine Learning Pipeline: Implements a full modeling pipeline, including data preparation, spatial cross-validation, and training of 
+   * Logistic Regression and 
+   * Random Forest models.
+
+* Change Detection Tasks: Trains models to perform three distinct tasks:
+   * Identify any significant land cover change.
+   * Detect increases in built-up areas.
+   * Pinpoint areas of vegetation decline.
+
+* Robust Evaluation: Evaluates models using standard classification metrics and a custom False Change Rate to measure precision in change detection.
+
+* Interactive Dashboards: Features two Streamlit applications for visualizing data, model predictions, and evaluation results.
 
 ## Project Structure
 ```
