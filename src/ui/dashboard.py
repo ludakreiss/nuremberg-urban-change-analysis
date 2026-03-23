@@ -81,9 +81,9 @@ DEFAULT_COLOR   = "#888888"
 MAP_SAMPLE_SIZE = 5_000
 BBOX_HALF       = 0.008
 TASK_LABELS = {
-    "changing_areas":     "🔄  Changing Areas",
-    "built_up_increase":  "🏙️  Built-up Increase",
-    "vegetation_decline": "🌿  Vegetation Decline",
+    "changing_areas":     "Changing Areas",
+    "built_up_increase":  "Built-up Increase",
+    "vegetation_decline": "Vegetation Decline",
 }
 
 
