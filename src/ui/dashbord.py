@@ -1,677 +1,794 @@
-import re
+import os
 import streamlit as st
-import plotly.graph_objects as go
-import plotly.express as px
 import pandas as pd
 import numpy as np
-import requests
-
-# @st.cache_data   #Will need this to download data
-# def load_data():
-#     url = "https://huggingface.co/datasets/YOUR_USERNAME/YOUR_DATASET/resolve/main/nuremberg_dataset_final.csv"
-#     df = pd.read_csv(url)
-#     return df
-
-# df = load_data()
+import plotly.graph_objects as go
+import plotly.express as px
+from sklearn.neighbors import KDTree
 
 
+#PATH SETUP
 
-st.set_page_config(
-    page_title="Nuremberg Land Cover Explorer",
-    page_icon="🔍",
-    layout="wide",
+BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
+
+DATA_PATH = os.path.join(
+    PROJECT_ROOT,
+    "data", "labels", "combined_format",
+    "nuremberg_features_labels.parquet"
 )
 
 
-# Bounding for Nuremberg coordinates only
+#DATA LOADING
+@st.cache_data
+def load_data() -> pd.DataFrame:
+    """Read the parquet data file and return a Pandas DataFrame."""
+    return pd.read_parquet(DATA_PATH)
 
-NUREMBERG_LAT = 49.452
-NUREMBERG_LON = 11.077
 
-NUREMBERG_BOUNDS = {
-    "min_lat": 49.38, "max_lat": 49.52,
-    "min_lon": 10.95, "max_lon": 11.15,
+
+@st.cache_resource
+def build_kdtree(df: pd.DataFrame) -> KDTree:
+    """
+    Build a KDTree from the latitude / longitude columns.
+    A KDTree is a data structure for very fast nearest-neighbour searches:
+    given a clicked lat/lon we instantly find the closest row in the dataset.
+    """
+    return KDTree(df[["latitude", "longitude"]].values)
+
+
+# Load everything at startup
+df   = load_data()
+tree = build_kdtree(df)
+
+
+# ─── 4. CONSTANTS ──────────────────────────────────────────────────────────────
+# ESA WorldCover uses numeric codes to represent land-cover types.
+# These dictionaries map code → human name  and  code → hex colour.
+ESA_CLASS_NAMES: dict[int, str] = {
+    10: "Tree cover",
+    30: "Grassland",
+    40: "Cropland",
+    50: "Built-up",
+    60: "Bare / sparse vegetation",
+    80: "Permanent water"
 }
 
-ESA_CLASSES = {
-    10:  {"name": "Tree cover",         "color": "#006400"},
-    30:  {"name": "Grassland",          "color": "#50E80A"},
-    40:  {"name": "Cropland",           "color": "#BC721D"},
-    50:  {"name": "Built-up",           "color": "#000000"},
-    60:  {"name": "Bare / sparse veg",  "color": "#C0EC70"},
-    80:  {"name": "Permanent water",    "color": "#358FE9"},
+# Colours loosely follow the official ESA WorldCover colour scheme
+ESA_CLASS_COLORS: dict[int, str] = {
+    10: "#1a7d26",   # trees
+    30: "#a4d65e",   # grass
+    40: "#c8a951",   # crops
+    50: "#d73027",   # built-up / urban
+    60: "#d9c99e",   # bare land
+    80: "#2196f3",   # water
 }
 
-QUICK_LOCATIONS = {
-    "Old Town":          (49.4543, 11.0775),
-    "Industrial North":  (49.490,  11.060),
-    "Reichswald Forest": (49.410,  11.130),
-    "Airport":           (49.497,  11.078),
-}
+# Default class colour when a code isn't in the dictionary above
+DEFAULT_COLOR = "#888888"
 
-# Half-size of the bounding box drawn around a searched location.
-# 0.008 degrees ≈ roughly 600 m on each side.
-BBOX_HALF = 0.008
+# When the user clicks the map we draw a small bounding-box rectangle
+# around the selected point. BBOX_HALF is half the side length in degrees.
+BBOX_HALF = 0.008   # ≈ 0.8 km at Nuremberg's latitude
 
-# CSS
+# We show a random sample of the data on the map (too many dots = slow)
+MAP_SAMPLE_SIZE = 5_000
+
+
+# ─── 5. HELPER FUNCTIONS ───────────────────────────────────────────────────────
+
+def get_nearest_row(lat: float, lon: float) -> pd.Series:
+    """
+    Given a latitude and longitude, return the DataFrame row whose
+    coordinates are closest to that point.
+    Uses the pre-built KDTree for speed (O(log n) instead of O(n)).
+    """
+    _, idx = tree.query([[lat, lon]], k=1)
+    return df.iloc[idx[0][0]]
+
+
+def make_bounding_box(lat: float, lon: float):
+    """
+    Return the five corner coordinates (closed polygon) of a small square
+    centred on (lat, lon).  Used to draw a highlight rectangle on the map.
+    Returns: (list_of_lats, list_of_lons)
+    """
+    lats = [lat - BBOX_HALF, lat + BBOX_HALF,
+            lat + BBOX_HALF, lat - BBOX_HALF,
+            lat - BBOX_HALF]
+    lons = [lon - BBOX_HALF, lon - BBOX_HALF,
+            lon + BBOX_HALF, lon + BBOX_HALF,
+            lon - BBOX_HALF]
+    return lats, lons
+
+
+def label_to_color(label: int) -> str:
+    """Return the hex colour string for a given ESA class code."""
+    return ESA_CLASS_COLORS.get(label, DEFAULT_COLOR)
+
+
+def label_to_name(label: int) -> str:
+    """Return the human-readable name for a given ESA class code."""
+    return ESA_CLASS_NAMES.get(label, f"Unknown ({label})")
+
+
+def classify_point(row: pd.Series) -> dict:
+    """
+    A simple rule-based 'model' that assigns land-cover labels to a single
+    data point based on its Sentinel-2 spectral features.
+
+    Rules (very simplified):
+    ─────────────────────────
+    • High SWIR (B11 > 0.25)  →  Built-up  (urban surfaces reflect SWIR)
+    • High NDVI (> 0.4)       →  Tree cover (dense vegetation)
+    • Medium NDVI (0.15–0.4)  →  Grassland / cropland
+    • Otherwise               →  Bare / sparse vegetation
+
+    Returns a dict with predicted labels and whether change occurred.
+    """
+    def _classify(b11: float, ndvi: float) -> int:
+        if b11 > 0.25:
+            return 50   # Built-up
+        elif ndvi > 0.40:
+            return 10   # Tree cover
+        elif ndvi > 0.15:
+            return 30   # Grassland
+        else:
+            return 60   # Bare land
+
+    # Read feature columns – fall back to 0 if column doesn't exist
+    b11_2020  = row.get("b11_2020",  0.0)
+    b11_2021  = row.get("b11_2021",  0.0)
+    ndvi_2020 = row.get("ndvi_2020", 0.0)
+    ndvi_2021 = row.get("ndvi_2021", 0.0)
+
+    label_2020 = _classify(b11_2020, ndvi_2020)
+    label_2021 = _classify(b11_2021, ndvi_2021)
+
+    return {
+        "label_2020": label_2020,
+        "label_2021": label_2021,
+        "changed":    label_2020 != label_2021,
+        # Confidence proxy: how far is NDVI from the decision boundary 0.4?
+        "conf_2020":  float(np.clip(abs(ndvi_2020) / 0.6, 0, 1)),
+        "conf_2021":  float(np.clip(abs(ndvi_2021) / 0.6, 0, 1)),
+    }
+
+
+# ─── 6. MAP BUILDER ────────────────────────────────────────────────────────────
+
+def build_map(lat: float, lon: float, view_mode: str) -> go.Figure:
+    """
+    Build and return a Plotly Mapbox scatter map.
+
+    Parameters
+    ──────────
+    lat, lon  : coordinates of the selected / search point
+    view_mode : one of  '2020' | '2021' | 'Change'
+
+    What gets drawn
+    ───────────────
+    Layer 1 – coloured dots (random sample of all data points)
+    Layer 2 – big red marker pin at (lat, lon)
+    Layer 3 – white bounding-box rectangle around the pin
+    """
+    # Take a random sample so the map stays responsive
+    sample = df.sample(min(MAP_SAMPLE_SIZE, len(df)), random_state=42)
+
+    # ── Determine dot colours based on the chosen view mode ──────────────────
+    if view_mode == "2020":
+        # Colour each dot by its 2020 land-cover label
+        dot_colors = sample["label_2020"].apply(label_to_color)
+        title_text = "Land Cover 2020"
+
+    elif view_mode == "2021":
+        # Colour each dot by its 2021 land-cover label
+        dot_colors = sample["label_2021"].apply(label_to_color)
+        title_text = "Land Cover 2021"
+
+    else:   # "Change"
+        # Red = changed,  teal = stable
+        # We use delta_built_up if available; otherwise compare labels directly
+        if "delta_built_up" in sample.columns:
+            changed = sample["delta_built_up"].abs() > 0.05
+        else:
+            changed = sample["label_2020"] != sample["label_2021"]
+        dot_colors = changed.map({True: "#ff4d4d", False: "#26a69a"})
+        title_text = "Change Detection (2020 → 2021)"
+
+    # ── Layer 1: data dots ────────────────────────────────────────────────────
+    data_trace = go.Scattermapbox(
+        lat    = sample["latitude"],
+        lon    = sample["longitude"],
+        mode   = "markers",
+        name   = "Data points",
+        marker = dict(
+            size    = 5,
+            color   = dot_colors,
+            opacity = 0.75,
+        ),
+        hovertemplate = (
+            "Lat: %{lat:.5f}<br>"
+            "Lon: %{lon:.5f}<extra></extra>"
+        ),
+    )
+
+    # ── Layer 2: selected-point pin ───────────────────────────────────────────
+    pin_trace = go.Scattermapbox(
+        lat    = [lat],
+        lon    = [lon],
+        mode   = "markers+text",
+        name   = "Selected",
+        text   = ["▼"],
+        textposition = "top center",
+        marker = dict(size=18, color="#ff1744", symbol="circle"),
+        hovertemplate = f"Selected<br>Lat: {lat:.5f}<br>Lon: {lon:.5f}<extra></extra>",
+    )
+
+    # ── Layer 3: bounding-box rectangle ──────────────────────────────────────
+    box_lats, box_lons = make_bounding_box(lat, lon)
+    bbox_trace = go.Scattermapbox(
+        lat  = box_lats,
+        lon  = box_lons,
+        mode = "lines",
+        name = "Area",
+        line = dict(color="white", width=2),
+        hoverinfo = "skip",
+    )
+
+    # ── Assemble the figure ───────────────────────────────────────────────────
+    fig = go.Figure(data=[data_trace, pin_trace, bbox_trace])
+
+    fig.update_layout(
+        title = dict(text=title_text, font=dict(size=15, color="#e0e0e0")),
+        mapbox = dict(
+            style  = "open-street-map",      # map style
+            center = dict(lat=lat, lon=lon),
+            zoom   = 13,
+        ),
+        margin       = dict(l=0, r=0, t=40, b=0),
+        height       = 540,
+        paper_bgcolor = "#0d1117",
+        showlegend   = False,
+    )
+
+    return fig
+
+
+#PAGE CONFIG & GLOBAL CSS ---------------------------------------------------------------------------------------------------
+st.set_page_config(
+    page_title = "Nuremberg Land Cover Analysis",
+    page_icon  = "🔍",
+    layout     = "wide",
+)
+
 
 st.markdown("""
 <style>
-    .stApp { background-color: #0d1117; }
+/* ── Google font import ── */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
-    .header-banner {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
-        border-radius: 14px;
-        padding: 1.4rem 2rem;
-        margin-bottom: 1.2rem;
-        border: 1px solid #2d3f55;
-    }
-    .header-title {
-        color: #e94560;
-        font-size: 2rem;
-        font-weight: 800;
-        margin: 0 0 4px 0;
-        letter-spacing: -0.5px;
-    }
-    .header-sub { color: #a8b2d8; font-size: 0.95rem; margin: 0; }
+/* ── Root colours & fonts ── */
+:root {
+    --bg-deep:    #0d1117;
+    --bg-panel:   #161b22;
+    --bg-card:    #1c2333;
+    --accent:     #58a6ff;
+    --accent2:    #3fb950;
+    --warn:       #f85149;
+    --text-main:  #e6edf3;
+    --text-muted: #8b949e;
+    --border:     #30363d;
+}
 
-    .card {
-        background: #161b22;
-        border: 1px solid #2d3f55;
-        border-radius: 10px;
-        padding: 1rem 1.2rem;
-        margin: 0.5rem 0;
-        color: #cdd6f4;
-    }
-    .card h4 { color: #89b4fa; margin: 0 0 6px 0; }
-    .card small { color: #8b949e; }
+html, body, [class*="css"] {
+    font-family: 'Space Grotesk', sans-serif;
+    background-color: var(--bg-deep);
+    color: var(--text-main);
+}
 
-    .legend-row {
-        display: flex; align-items: center;
-        gap: 8px; margin: 5px 0;
-        font-size: 0.82rem; color: #cdd6f4;
-    }
-    .dot { width: 13px; height: 13px; border-radius: 50%; flex-shrink: 0; }
+/* ── Header strip ── */
+.main-header {
+    background: linear-gradient(135deg, #0d1117 0%, #1c2333 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 1.2rem 1.6rem;
+    margin-bottom: 1.2rem;
+    border-radius: 0 0 10px 10px;
+}
+.main-header h1 {
+    font-size: 1.7rem;
+    font-weight: 700;
+    margin: 0;
+    background: linear-gradient(90deg, #58a6ff, #3fb950);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -0.5px;
+}
+.main-header p {
+    color: var(--text-muted);
+    margin: 0.2rem 0 0;
+    font-size: 0.9rem;
+}
 
-    [data-testid="metric-container"] {
-        background: #161b22 !important;
-        border: 1px solid #2d3f55 !important;
-        border-radius: 8px;
-    }
-    .stRadio > label { color: #a8b2d8 !important; }
+/* ── Metric cards ── */
+.metric-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    margin-bottom: 0.75rem;
+    transition: border-color 0.2s;
+}
+.metric-card:hover { border-color: var(--accent); }
+.metric-card .label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+}
+.metric-card .value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-main);
+    font-family: 'JetBrains Mono', monospace;
+}
+.metric-card .sub {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.15rem;
+}
 
-    .search-hint { font-size: 0.8rem; color: #8b949e; margin-top: 4px; }
+/* ── Status banners ── */
+.banner-change {
+    background: rgba(248,81,73,0.12);
+    border: 1px solid #f85149;
+    border-left: 4px solid #f85149;
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin: 0.5rem 0;
+}
+.banner-stable {
+    background: rgba(63,185,80,0.10);
+    border: 1px solid #3fb950;
+    border-left: 4px solid #3fb950;
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin: 0.5rem 0;
+}
+.banner-change .title  { color: #f85149; font-weight: 700; font-size: 0.95rem; margin-bottom: 0.4rem; }
+.banner-stable .title  { color: #3fb950; font-weight: 700; font-size: 0.95rem; margin-bottom: 0.4rem; }
+.banner-change .detail { color: var(--text-main); font-size: 0.85rem; }
+.banner-stable .detail { color: var(--text-main); font-size: 0.85rem; }
+
+/* ── Legend item ── */
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.35rem 0.5rem;
+    border-radius: 6px;
+    margin-bottom: 0.3rem;
+    transition: background 0.15s;
+    cursor: default;
+}
+.legend-item:hover { background: var(--bg-card); }
+.legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+.legend-label {
+    font-size: 0.82rem;
+    color: var(--text-main);
+}
+
+/* ── Section headings ── */
+.section-heading {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.4rem;
+    margin: 1rem 0 0.6rem;
+}
+
+/* ── Streamlit widget overrides ── */
+div[data-testid="stTabs"] button {
+    color: var(--text-muted) !important;
+    font-family: 'Space Grotesk', sans-serif !important;
+}
+div[data-testid="stTabs"] button[aria-selected="true"] {
+    color: var(--accent) !important;
+    border-bottom-color: var(--accent) !important;
+}
+.stNumberInput input, .stTextInput input {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-main) !important;
+    font-family: 'JetBrains Mono', monospace !important;
+}
+.stRadio label { color: var(--text-main) !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────
-# HELPER FUNCTIONS
-# ─────────────────────────────────────────────────────────────
 
-def in_bounds(lat: float, lon: float) -> bool:
-    """Returns True if the point is inside the Nuremberg study area."""
-    b = NUREMBERG_BOUNDS
-    return b["min_lat"] <= lat <= b["max_lat"] and b["min_lon"] <= lon <= b["max_lon"]
-
-
-def try_parse_coordinates(text: str):
-
-    # Step 1: remove degree symbols and compass directions
-    cleaned = re.sub(r"[°NSEWnsew]", " ", text)
-    # Step 2: replace commas with spaces
-    cleaned = cleaned.replace(",", " ")
-    # Step 3: extract all numbers (allowing decimals and minus for S/W)
-    numbers = re.findall(r"-?\d+\.?\d*", cleaned)
-
-    if len(numbers) == 2:
-        try:
-            lat = float(numbers[0])
-            lon = float(numbers[1])
-            # Sanity check: valid geographic ranges
-            if -90 <= lat <= 90 and -180 <= lon <= 180:
-                return lat, lon
-        except ValueError:
-            pass
-    return None
-
-
-def geocode_place(name: str) -> dict:
-    
-    full_query = f"{name}, Nuremberg, Germany"
-    try:
-        # First try: stay inside Nuremberg bounding box
-        r = requests.get(
-            "https://nominatim.openstreetmap.org/search",
-            params={
-                "q":               full_query,
-                "format":          "json",
-                "limit":           1,
-                "viewbox":         "10.95,49.52,11.15,49.38",
-                "bounded":         1,
-                "accept-language": "en",
-            },
-            headers={"User-Agent": "NurembergLandCoverApp/1.0"},
-            timeout=5,
-        )
-        results = r.json()
-
-        # Fallback: search without bounding box
-        if not results:
-            r2 = requests.get(
-                "https://nominatim.openstreetmap.org/search",
-                params={
-                    "q":               full_query,
-                    "format":          "json",
-                    "limit":           1,
-                    "accept-language": "en",
-                },
-                headers={"User-Agent": "NurembergLandCoverApp/1.0"},
-                timeout=5,
-            )
-            results = r2.json()
-
-        if not results:
-            return {
-                "lat": None, "lon": None, "display": None,
-                "error": f"Could not find '{name}' near Nuremberg. Try a different name.",
-            }
-
-        best = results[0]
-        return {
-            "lat":     float(best["lat"]),
-            "lon":     float(best["lon"]),
-            "display": best["display_name"],
-            "error":   None,
-        }
-
-    except requests.exceptions.Timeout:
-        return {"lat": None, "lon": None, "display": None,
-                "error": "Search timed out – please try again."}
-    except Exception as e:
-        return {"lat": None, "lon": None, "display": None,
-                "error": f"Search failed: {str(e)}"}
-
-
-def smart_search(query: str) -> dict:
-    
-    query = query.strip()
-    if not query:
-        return {"lat": None, "lon": None, "display": None,
-                "error": "Please type something.", "search_type": None}
-
-    # Try coordinates first
-    parsed = try_parse_coordinates(query)
-    if parsed:
-        lat, lon = parsed
-        return {
-            "lat":         lat,
-            "lon":         lon,
-            "display":     f"{lat:.4f}° N, {lon:.4f}° E",
-            "error":       None,
-            "search_type": "coords",
-        }
-
-    # Otherwise geocode it as a place name
-    result = geocode_place(query)
-    result["search_type"] = "place"
-    return result
-
-
-def esa_color(class_id: int) -> str:
-    return ESA_CLASSES.get(class_id, {}).get("color", "#808080")
-
-
-def esa_name(class_id: int) -> str:
-    return ESA_CLASSES.get(class_id, {}).get("name", "Unknown")
-
-
-def mock_predict(lat: float, lon: float) -> dict:
-    """
-    PLACEHOLDER – replace with your real model.
-    Returns fake predictions based on distance from city centre.
-    """
-    dist = ((lat - NUREMBERG_LAT) ** 2 + (lon - NUREMBERG_LON) ** 2) ** 0.5
-    if dist < 0.05:
-        l2020, l2021 = 50, 50        # Built-up → Built-up
-    elif dist < 0.07:
-        l2020, l2021 = 40, 50        # Cropland → Built-up (CHANGE!)
-    else:
-        l2020, l2021 = 40, 40        # Cropland → Cropland
-
-    rng = np.random.default_rng(seed=int(abs(lat * 1000 + lon * 100)))
-    return {
-        "label_2020": l2020,
-        "label_2021": l2021,
-        "conf_2020":  round(float(rng.uniform(0.68, 0.92)), 2),
-        "conf_2021":  round(float(rng.uniform(0.70, 0.94)), 2),
-        "changed":    l2020 != l2021,
-    }
-
-
-def make_location_bbox(lat: float, lon: float, half: float = BBOX_HALF):
-    
-    box_lats = [lat - half, lat + half, lat + half, lat - half, lat - half]
-    box_lons = [lon - half, lon - half, lon + half, lon + half, lon - half]
-    return box_lats, box_lons
-
-
-def make_scatter_map(
-    center_lat: float,
-    center_lon: float,
-    year_view: str,
-    marker_lat: float = None,
-    marker_lon: float = None,
-    pred: dict = None,
-) -> go.Figure:
-
-    # ── Fake pixel grid (replace with real HuggingFace data) ─────────
-    np.random.seed(42)
-    n = 1200
-    lats = np.random.uniform(NUREMBERG_BOUNDS["min_lat"],
-                             NUREMBERG_BOUNDS["max_lat"], n)
-    lons = np.random.uniform(NUREMBERG_BOUNDS["min_lon"],
-                             NUREMBERG_BOUNDS["max_lon"], n)
-
-    labels_2020, labels_2021 = [], []
-    for la, lo in zip(lats, lons):
-        d = ((la - NUREMBERG_LAT) ** 2 + (lo - NUREMBERG_LON) ** 2) ** 0.5
-        if d < 0.05:
-            l20, l21 = 50, 50
-        elif d < 0.07:
-            prob = np.random.rand()
-            l20 = 40 if prob > 0.3 else 50
-            l21 = 50 if prob > 0.3 else 50
-        else:
-            l20 = l21 = np.random.choice([10, 30, 40])
-        labels_2020.append(l20)
-        labels_2021.append(l21)
-
-    labels_2020 = np.array(labels_2020)
-    labels_2021 = np.array(labels_2021)
-
-    # ── Colours depend on selected year/view ─────────────────────────
-    if year_view == "2020":
-        title_tag  = "2020 Land Cover"
-        dot_colors = [esa_color(l) for l in labels_2020]
-        dot_text   = [esa_name(l)  for l in labels_2020]
-    elif year_view == "2021":
-        title_tag  = "2021 Land Cover"
-        dot_colors = [esa_color(l) for l in labels_2021]
-        dot_text   = [esa_name(l)  for l in labels_2021]
-    else:
-        title_tag    = "Land Cover Change 2020 → 2021"
-        changed_mask = labels_2020 != labels_2021
-        dot_colors   = ["#e94560" if c else "#0b25cf" for c in changed_mask]
-        dot_text     = [
-            f"CHANGED: {esa_name(l20)} → {esa_name(l21)}" if c
-            else f"Stable: {esa_name(l20)}"
-            for c, l20, l21 in zip(changed_mask, labels_2020, labels_2021)
-        ]
-
-    fig = go.Figure()
-
-    # Layer 1 – land cover dots
-    fig.add_trace(go.Scattermapbox(
-        lat=lats, lon=lons,
-        mode="markers",
-        marker=dict(size=6, color=dot_colors, opacity=0.75),
-        text=dot_text,
-        hovertemplate="<b>%{text}</b><br>Lat: %{lat:.4f}<br>Lon: %{lon:.4f}<extra></extra>",
-        name=title_tag,
-    ))
-
-    # Layer 2 – red box = full Nuremberg study area boundary
-    nb = NUREMBERG_BOUNDS
-    fig.add_trace(go.Scattermapbox(
-        lat=[nb["min_lat"], nb["max_lat"], nb["max_lat"], nb["min_lat"], nb["min_lat"]],
-        lon=[nb["min_lon"], nb["min_lon"], nb["max_lon"], nb["max_lon"], nb["min_lon"]],
-        mode="lines",
-        line=dict(color="#e94560", width=2),
-        hoverinfo="skip",
-        name="Study area boundary",
-    ))
-
-    # Layer 3 – white box = bounding box around the searched location
-    if marker_lat is not None:
-        bbox_lats, bbox_lons = make_location_bbox(marker_lat, marker_lon)
-        fig.add_trace(go.Scattermapbox(
-            lat=bbox_lats,
-            lon=bbox_lons,
-            mode="lines",
-            line=dict(color="#470808", width=2.5),
-            hoverinfo="skip",
-            name="Search area",
-        ))
-
-    # Layer 4 – star at the exact searched point
-    if marker_lat is not None and pred is not None:
-        if year_view == "Change":
-            status = "⚠️ CHANGED" if pred["changed"] else " Stable"
-            hover  = (f"<b>{status}</b><br>"
-                      f"{esa_name(pred['label_2020'])} → {esa_name(pred['label_2021'])}")
-        elif year_view == "2020":
-            hover = (f"<b>📍 Your location – 2020</b><br>"
-                     f"{esa_name(pred['label_2020'])}<br>"
-                     f"Confidence: {pred['conf_2020']*100:.0f}%")
-        else:
-            hover = (f"<b>📍 Your location – 2021</b><br>"
-                     f"{esa_name(pred['label_2021'])}<br>"
-                     f"Confidence: {pred['conf_2021']*100:.0f}%")
-
-        fig.add_trace(go.Scattermapbox(
-            lat=[marker_lat], lon=[marker_lon],
-            mode="markers",
-            marker=dict(size=100, color="#000000", symbol="star"),
-            text=[hover],
-            hovertemplate="%{text}<extra></extra>",
-            name="Your location",
-        ))
-
-    # ── Map layout ────────────────────────────────────────────────────
-    fig.update_layout(
-        mapbox=dict(
-            style="open-street-map",
-            center=dict(lat=center_lat, lon=center_lon),
-            zoom=11 if marker_lat is None else 14,
-        ),
-        margin=dict(l=0, r=0, t=35, b=0),
-        height=560,
-        paper_bgcolor="#0d1117",
-        font_color="#cdd6f4",
-        title=dict(
-            text=f"<b>{title_tag}</b>  –  Nuremberg",
-            font=dict(size=15, color="#89b4fa"),
-            x=0.01,
-        ),
-        legend=dict(
-            bgcolor="#161b22", bordercolor="#2d3f55",
-            borderwidth=1, font=dict(color="#cdd6f4"),
-        ),
-        showlegend=True,
-    )
-    return fig
-
-
-def make_bar_chart(pred: dict) -> go.Figure:
-    """Confidence bar chart for 2020 vs 2021."""
-    fig = go.Figure(go.Bar(
-        x=["2020", "2021"],
-        y=[pred["conf_2020"] * 100, pred["conf_2021"] * 100],
-        marker_color=["#4361ee", "#4cc9f0"],
-        text=[f"{pred['conf_2020']*100:.0f}%", f"{pred['conf_2021']*100:.0f}%"],
-        textposition="outside",
-        textfont=dict(color="#cdd6f4"),
-    ))
-    fig.update_layout(
-        title=dict(text="Model Confidence", font=dict(color="#89b4fa", size=13)),
-        yaxis=dict(range=[0, 110], ticksuffix="%", gridcolor="#2d3f55", color="#8b949e"),
-        xaxis=dict(color="#8b949e"),
-        paper_bgcolor="#161b22", plot_bgcolor="#161b22",
-        margin=dict(l=10, r=10, t=40, b=10),
-        height=200, font=dict(color="#cdd6f4"),
-    )
-    return fig
-
-
-
-# Store session data
-
-for key, val in {
-    "sel_lat":    NUREMBERG_LAT,
-    "sel_lon":    NUREMBERG_LON,
-    "has_marker": False,
-    "pred":       None,
-    "found_name": None,
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
-
-
-
-#header
-
+# PAGE HEADER ─────────────────────────────────────────────────────────────
 st.markdown("""
-<div class="header-banner">
-    <p class="header-title">🌍 Nuremberg Land Cover Explorer</p>
-    <p class="header-sub">
-        Visualise urban change 2020 → 2021 &nbsp;·&nbsp;
-        ESA WorldCover &nbsp;·&nbsp; Sentinel-2 &nbsp;·&nbsp; ML predictions
-    </p>
+<div class="main-header">
+  <h1> Nuremberg Urban Land Cover Analysis </h1>
+  <p>Explore satellite-derived land cover change between 2020 and 2021 · ESA WorldCover + Sentinel-2</p>
 </div>
 """, unsafe_allow_html=True)
 
 
-#Tabs
+# TABS ────────────────────────────────────────────────────────────────────
 
-tab_search, tab_model, tab_summary = st.tabs(
-    ["📍 Search for a Location", "🤖 Model Info", "📊 Data Summary"]
-)
+tab_map, tab_analysis, tab_stats = st.tabs([
+    "📍  Search Location",
+    "🔬  Model results",
+    "📊  Data Summary",
+])
 
-# TAB 1: Search area
-with tab_search:
-    st.markdown("### 📍 Search for a Location")
 
-    search_col, btn_col = st.columns([5, 1])
+# TAB 1 ------
 
-    with search_col:
-        query = st.text_input(
-            label="search_bar",
-            placeholder='Type a place  OR  coordinates — e.g. "Maxfeld"  or  "49.4415° N, 11.0797° E"',
-            label_visibility="collapsed",
+with tab_map:
+
+    # ── Split into left sidebar controls and right map area ──────────────────
+    ctrl_col, map_col = st.columns([1, 3], gap="medium")
+
+    # ── Left column: controls ─────────────────────────────────────────────────
+    with ctrl_col:
+
+        st.markdown('<div class="section-heading">Coordinates</div>', unsafe_allow_html=True)
+
+        # Latitude / longitude number inputs.
+        # value= sets the default.  step= controls how much +/– changes it.
+        lat = st.number_input(
+            "Latitude",
+            value  = 49.45,
+            min_value = 49.30,
+            max_value = 49.60,
+            step   = 0.001,
+            format = "%.5f",
+            help   = "WGS-84 decimal degrees latitude (Nuremberg range: 49.30 – 49.60)"
         )
-        st.markdown(
-            '<p class="search-hint">'
-            "Works with: place names · coordinates with ° N/E symbols · "
-            "plain numbers like <i>49.44, 11.08</i>"
-            "</p>",
-            unsafe_allow_html=True,
+        lon = st.number_input(
+            "Longitude",
+            value  = 11.07,
+            min_value = 10.90,
+            max_value = 11.25,
+            step   = 0.001,
+            format = "%.5f",
+            help   = "WGS-84 decimal degrees longitude (Nuremberg range: 10.90 – 11.25)"
         )
 
-    with btn_col:
-        st.markdown("<br>", unsafe_allow_html=True)
-        do_search = st.button("🔍 Search", use_container_width=True)
+        st.markdown('<div class="section-heading">View Mode</div>', unsafe_allow_html=True)
 
-    # Quick location buttons
-    st.markdown("**Quick locations →**")
-    q_cols = st.columns(len(QUICK_LOCATIONS))
-    for col, (label, (qlat, qlon)) in zip(q_cols, QUICK_LOCATIONS.items()):
-        if col.button(label, use_container_width=True):
-            st.session_state.sel_lat    = qlat
-            st.session_state.sel_lon    = qlon
-            st.session_state.has_marker = True
-            st.session_state.pred       = mock_predict(qlat, qlon)
-            st.session_state.found_name = label
-            st.rerun()
+        # Radio buttons to choose what the map colouring shows
+        view_mode = st.radio(
+            label  = "Colour dots by:",
+            options= ["2020", "2021", "Change"],
+            index  = 0,
+            help   = (
+                "2020 / 2021 → colour each point by its ESA land-cover class in that year.\n"
+                "Change      → red = changed class, teal = stable."
+            ),
+        )
 
-    # year selecter
-    st.markdown("### 🗺️ Map View")
-    year_view = st.radio(
-        label="Select what to display on the map:",
-        options=["2020", "2021", "Change"],
-        horizontal=True,
-        help=(
-            "2020 → land cover in 2020\n"
-            "2021 → land cover in 2021\n"
-            "Change → highlights pixels that changed between years"
-        ),
-    )
+        # ── Legend ─────────────────────────────────────────────────────────────
+        st.markdown('<div class="section-heading">Legend</div>', unsafe_allow_html=True)
 
-    # Process the search when button is pressed
-    if do_search and query.strip():
-        with st.spinner("Searching…"):
-            result = smart_search(query)
-
-        if result["error"]:
-            st.error(f"❌ {result['error']}")
-
-        elif not in_bounds(result["lat"], result["lon"]):
-            st.warning(
-                f"⚠️ Found **{result['display'][:70]}** "
-                f"but it is outside the Nuremberg study area."
-            )
+        if view_mode == "Change":
+            # Special 2-item legend for the change view
+            for colour, name in [("#ff4d4d", "Changed"), ("#1b11d0", "Stable")]:
+                st.markdown(
+                    f'<div class="legend-item">'
+                    f'<div class="legend-swatch" style="background:{colour}"></div>'
+                    f'<span class="legend-label">{name}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
         else:
-            st.session_state.sel_lat    = result["lat"]
-            st.session_state.sel_lon    = result["lon"]
-            st.session_state.has_marker = True
-            st.session_state.pred       = mock_predict(result["lat"], result["lon"])
-            st.session_state.found_name = result["display"]
-
-            if result["search_type"] == "coords":
-                st.success(
-                    f"Coordinates: **{result['lat']:.4f}° N, {result['lon']:.4f}° E**"
-                )
-            else:
-                st.success(
-                    f"Found: **{result['display'][:80]}**  "
-                    f"({result['lat']:.4f}° N, {result['lon']:.4f}° E)"
+            # Full ESA class legend
+            for code, name in ESA_CLASS_NAMES.items():
+                colour = ESA_CLASS_COLORS.get(code, DEFAULT_COLOR)
+                st.markdown(
+                    f'<div class="legend-item">'
+                    f'<div class="legend-swatch" style="background:{colour}"></div>'
+                    f'<span class="legend-label">{name}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
                 )
 
-    map_col, side_col = st.columns([3, 1], gap="medium")
-
-
-
+    #  Right column: map
     with map_col:
-        c_lat = st.session_state.sel_lat if st.session_state.has_marker else NUREMBERG_LAT
-        c_lon = st.session_state.sel_lon if st.session_state.has_marker else NUREMBERG_LON
 
-        fig_map = make_scatter_map(
-            center_lat=c_lat,
-            center_lon=c_lon,
-            year_view=year_view,
-            marker_lat=st.session_state.sel_lat if st.session_state.has_marker else None,
-            marker_lon=st.session_state.sel_lon if st.session_state.has_marker else None,
-            pred=st.session_state.pred,
+        st.plotly_chart(
+            build_map(lat, lon, view_mode),
+            use_container_width=True,
+            config={"scrollZoom": True},   # allow mouse-wheel zoom
         )
 
-        st.plotly_chart(fig_map, use_container_width=True)
+        # Tiny info row below the map
+        nearest = get_nearest_row(lat, lon)
+        st.caption(
+            f"📌 Nearest data point: "
+            f"lat {nearest['latitude']:.5f}, lon {nearest['longitude']:.5f}  ·  "
+            f"ESA 2020: **{label_to_name(int(nearest.get('label_2020', 0)))}**  ·  "
+            f"ESA 2021: **{label_to_name(int(nearest.get('label_2021', 0)))}**"
+        )
 
-    with side_col:
-        # ESA colour legend
-        st.markdown("#### 🎨 Land Cover Legend")
-        for cls_id, info in ESA_CLASSES.items():
-            st.markdown(
-                f'<div class="legend-row">'
-                f'<span class="dot" style="background:{info["color"]}"></span>'
-                f'<span>{info["name"]}</span></div>',
-                unsafe_allow_html=True,
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TAB 2 – POINT ANALYSIS
+#  Shows a detailed spectral and classification analysis for the point that
+#  was selected on the map (or the nearest point to the entered coordinates).
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_analysis:
+
+    # Get the data row nearest to the user's coordinates
+    row  = get_nearest_row(lat, lon)
+    pred = classify_point(row)
+
+    left_col, right_col = st.columns([1, 1], gap="large")
+
+    # ── Left: classification result & metadata ────────────────────────────────
+    with left_col:
+
+        st.markdown('<div class="section-heading">Classification Result</div>',
+                    unsafe_allow_html=True)
+
+        # Show a red "CHANGE" banner or a green "STABLE" banner
+        if pred["changed"]:
+            st.markdown(f"""
+            <div class="banner-change">
+              <div class="title">⚠️  LAND COVER CHANGE DETECTED</div>
+              <div class="detail">
+                <strong>2020:</strong> {label_to_name(pred['label_2020'])}<br>
+                <strong>2021:</strong> {label_to_name(pred['label_2021'])}
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div class="banner-stable">
+              <div class="title">✅  NO CHANGE — STABLE LAND COVER</div>
+              <div class="detail">
+                <strong>Both years:</strong> {label_to_name(pred['label_2020'])}
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown('<div class="section-heading">Spectral Features</div>',
+                    unsafe_allow_html=True)
+
+        # Display key feature values as metric cards.
+        # .get("column", default) avoids crashes if the column doesn't exist.
+        features = [
+            ("NDVI 2020",  f"{row.get('ndvi_2020', 0):.4f}",  "Vegetation index (higher = greener)"),
+            ("NDVI 2021",  f"{row.get('ndvi_2021', 0):.4f}",  "Vegetation index (higher = greener)"),
+            ("SWIR B11 2020", f"{row.get('b11_2020', 0):.4f}", "Short-wave infrared (built-up proxy)"),
+            ("SWIR B11 2021", f"{row.get('b11_2021', 0):.4f}", "Short-wave infrared (built-up proxy)"),
+        ]
+
+        for label, value, sub in features:
+            st.markdown(f"""
+            <div class="metric-card">
+              <div class="label">{label}</div>
+              <div class="value">{value}</div>
+              <div class="sub">{sub}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ── Right: confidence bar chart ───────────────────────────────────────────
+    with right_col:
+
+        st.markdown('<div class="section-heading">Model Confidence</div>',
+                    unsafe_allow_html=True)
+
+        # Two bars showing how confident the rule-based classifier is for each year.
+        # Confidence is a proxy derived from how far the NDVI is from the threshold.
+        conf_fig = go.Figure()
+
+        conf_fig.add_trace(go.Bar(
+            x     = ["2020", "2021"],
+            y     = [pred["conf_2020"] * 100, pred["conf_2021"] * 100],
+            text  = [f"{pred['conf_2020']*100:.0f}%", f"{pred['conf_2021']*100:.0f}%"],
+            textposition = "outside",
+            textfont     = dict(color="#e6edf3", size=14, family="JetBrains Mono"),
+            marker_color = ["#58a6ff", "#3fb950"],
+            marker_line_width = 0,
+        ))
+
+        conf_fig.update_layout(
+            paper_bgcolor = "#0d1117",
+            plot_bgcolor  = "#0d1117",
+            font          = dict(color="#8b949e", family="Space Grotesk"),
+            xaxis         = dict(showgrid=False),
+            yaxis         = dict(range=[0, 115], showgrid=True,
+                                 gridcolor="#21262d", ticksuffix="%"),
+            height        = 260,
+            margin        = dict(l=10, r=10, t=20, b=10),
+            showlegend    = False,
+        )
+
+        st.plotly_chart(conf_fig, use_container_width=True)
+
+        # ── Spectral band comparison (radar / spider chart) ──────────────────
+        st.markdown('<div class="section-heading">Band Profile Comparison</div>',
+                    unsafe_allow_html=True)
+
+        # Collect available band columns (b3, b4, b8, b11) for 2020 and 2021
+        band_labels = []
+        vals_2020   = []
+        vals_2021   = []
+
+        for band in ["b3", "b4", "b8", "b11"]:
+            col_2020 = f"{band}_2020"
+            col_2021 = f"{band}_2021"
+            if col_2020 in row.index and col_2021 in row.index:
+                band_labels.append(band.upper())
+                vals_2020.append(float(row[col_2020]))
+                vals_2021.append(float(row[col_2021]))
+
+        if band_labels:
+            radar_fig = go.Figure()
+
+            # Close the polygon by repeating the first value at the end
+            theta = band_labels + [band_labels[0]]
+
+            radar_fig.add_trace(go.Scatterpolar(
+                r     = vals_2020 + [vals_2020[0]],
+                theta = theta,
+                name  = "2020",
+                line  = dict(color="#58a6ff", width=2),
+                fill  = "toself",
+                fillcolor = "rgba(88,166,255,0.15)",
+            ))
+
+            radar_fig.add_trace(go.Scatterpolar(
+                r     = vals_2021 + [vals_2021[0]],
+                theta = theta,
+                name  = "2021",
+                line  = dict(color="#3fb950", width=2),
+                fill  = "toself",
+                fillcolor = "rgba(63,185,80,0.15)",
+            ))
+
+            radar_fig.update_layout(
+                polar = dict(
+                    bgcolor   = "#161b22",
+                    angularaxis = dict(color="#8b949e", gridcolor="#30363d"),
+                    radialaxis  = dict(color="#8b949e", gridcolor="#30363d",
+                                       showticklabels=True),
+                ),
+                paper_bgcolor = "#0d1117",
+                font      = dict(color="#8b949e", family="Space Grotesk"),
+                legend    = dict(font=dict(color="#e6edf3")),
+                height    = 320,
+                margin    = dict(l=40, r=40, t=30, b=10),
             )
 
+            st.plotly_chart(radar_fig, use_container_width=True)
+        else:
+            st.info("Band columns (b3, b4, b8, b11) not found in the dataset.")
 
 
-# TAB 2: MODEL INFO
-with tab_model:
-    if st.session_state.pred:
-        pred = st.session_state.pred
+# ══════════════════════════════════════════════════════════════════════════════
+#  TAB 3 – AREA SUMMARY
+#  High-level statistics about the whole Nuremberg study area.
+#  Numbers here are placeholders that you can replace with real aggregations
+#  from the loaded DataFrame once you know the column structure.
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_stats:
 
-        col1, col2 = st.columns(2)
+    st.markdown('<div class="section-heading">Land Cover Area (km²)</div>',
+                unsafe_allow_html=True)
 
-        with col1:
-
-            st.markdown("#### Model Predictions")
-            if st.session_state.found_name:
-                st.caption(f"📍 {st.session_state.found_name[:70]}")
-            st.caption(
-                f"{st.session_state.sel_lat:.4f}° N, "
-                f"{st.session_state.sel_lon:.4f}° E"
-            )
-
-            # 2020 card
-            st.markdown(
-                f'<div class="card"><h4>2020</h4>'
-                f'<span style="color:{esa_color(pred["label_2020"])};font-size:1.05rem">'
-                f'■ {esa_name(pred["label_2020"])}</span><br>'
-                f'Confidence: <b>{pred["conf_2020"]*100:.0f}%</b></div>',
-                unsafe_allow_html=True,
-            )
-
-            # 2021 card
-            st.markdown(
-                f'<div class="card"><h4>2021</h4>'
-                f'<span style="color:{esa_color(pred["label_2021"])};font-size:1.05rem">'
-                f'■ {esa_name(pred["label_2021"])}</span><br>'
-                f'Confidence: <b>{pred["conf_2021"]*100:.0f}%</b></div>',
-                unsafe_allow_html=True,
-            )
-
-            # Change alert
-            if pred["changed"]:
-                st.error(
-                    f"⚠️ **Change detected!**\n\n"
-                    f"{esa_name(pred['label_2020'])} → {esa_name(pred['label_2021'])}"
-                )
-            else:
-                st.success(f"**No change**\nStable: {esa_name(pred['label_2020'])}")
-
-        with col2:
-
-            st.markdown("#### Model Confidence")
-
-            # Confidence chart
-            st.plotly_chart(make_bar_chart(pred), use_container_width=True, height = 450 )
-
-    else:
-        st.info("Search for a location first to see ML predictions here.")
-
-    st.divider()
-    st.markdown("#### ⚠️ Limitations")
-    st.markdown(
-        '<div class="card"><small>'
-        "• Features: Sentinel-2 bands B3, B4, B8, B11<br>"
-        "• Labels: ESA WorldCover (10 m resolution)<br>"
-        "• Cloud cover may reduce accuracy<br>"
-        "• Seasonal effects not corrected<br>"
-        "</small></div>",
-        unsafe_allow_html=True,
-    )
-
-# TAB 3: DATA SUMMARY
-with tab_summary:
-    st.markdown("#### 📊 Nuremberg Land Cover Summary")
-
-    summary_df = pd.DataFrame({
-        "Land Cover":    ["Built-up", "Cropland", "Tree cover", "Grassland", "Water"],
-        "Area 2020 km²": [87.3, 42.1, 31.5, 18.7, 4.2],
-        "Area 2021 km²": [89.1, 39.8, 31.2, 18.9, 4.2],
-        "Change km²":    [+1.8, -2.3, -0.3, +0.2, 0.0],
+    # ── Summary table ─────────────────────────────────────────────────────────
+    # Replace these hard-coded values with  df.groupby("label_2020").size()
+    # calculations once the data schema is confirmed.
+    summary = pd.DataFrame({
+        "Class":    ["Built-up", "Tree cover", "Cropland", "Grassland",
+                     "Water", "Bare veg."],
+        "Code":     [50, 10, 40, 30, 80, 60],
+        "Area 2020 (km²)": [87.3, 31.5, 42.1, 18.7, 4.2, 2.1],
+        "Area 2021 (km²)": [89.1, 31.2, 39.8, 18.9, 4.2, 2.7],
     })
+    summary["Change (km²)"] = (
+        summary["Area 2021 (km²)"] - summary["Area 2020 (km²)"]
+    ).round(1)
 
-    def colour_change_tab(val):
-        if val > 0:   return "color: #4caf50; font-weight: bold"
-        elif val < 0: return "color: #e94560; font-weight: bold"
+    # Colour the Change column: red for shrinkage, green for growth
+    def colour_change(val):
+        if val < 0:
+            return "color: #f85149; font-weight: 600"
+        elif val > 0:
+            return "color: #3fb950; font-weight: 600"
         return "color: #8b949e"
 
     st.dataframe(
-        summary_df.style.applymap(colour_change_tab, subset=["Change km²"]),
-        use_container_width=True, hide_index=True,
+        summary.style.applymap(colour_change, subset=["Change (km²)"]),
+        use_container_width=True,
+        hide_index=True,
     )
 
-    fig_bar_tab = px.bar(
-        summary_df,
-        x="Land Cover",
-        y=["Area 2020 km²", "Area 2021 km²"],
-        barmode="group",
-        color_discrete_map={"Area 2020 km²": "#4361ee", "Area 2021 km²": "#4cc9f0"},
-        title="Area by Land Cover Class – 2020 vs 2021",
-        labels={"value": "Area (km²)", "variable": "Year"},
+    # ── Grouped bar chart: 2020 vs 2021 per class ─────────────────────────────
+    st.markdown('<div class="section-heading">Area Comparison by Class</div>',
+                unsafe_allow_html=True)
+
+    bar_fig = go.Figure()
+
+    bar_fig.add_trace(go.Bar(
+        name         = "2020",
+        x            = summary["Class"],
+        y            = summary["Area 2020 (km²)"],
+        marker_color = "#58a6ff",
+        marker_line_width = 0,
+    ))
+
+    bar_fig.add_trace(go.Bar(
+        name         = "2021",
+        x            = summary["Class"],
+        y            = summary["Area 2021 (km²)"],
+        marker_color = "#3fb950",
+        marker_line_width = 0,
+    ))
+
+    bar_fig.update_layout(
+        barmode       = "group",
+        paper_bgcolor = "#0d1117",
+        plot_bgcolor  = "#0d1117",
+        font          = dict(color="#8b949e", family="Space Grotesk"),
+        xaxis         = dict(showgrid=False),
+        yaxis         = dict(title="km²", gridcolor="#21262d"),
+        legend        = dict(font=dict(color="#e6edf3")),
+        height        = 340,
+        margin        = dict(l=10, r=10, t=20, b=10),
     )
-    fig_bar_tab.update_layout(
-        paper_bgcolor="#0d1117", plot_bgcolor="#161b22",
-        font_color="#cdd6f4", title_font_color="#89b4fa",
-        legend_bgcolor="#161b22",
-        xaxis=dict(gridcolor="#2d3f55"),
-        yaxis=dict(gridcolor="#2d3f55"),
-        height=320,
+
+    st.plotly_chart(bar_fig, use_container_width=True)
+
+    # ── Change bar (delta) ────────────────────────────────────────────────────
+    st.markdown('<div class="section-heading">Net Change per Class</div>',
+                unsafe_allow_html=True)
+
+    delta_fig = go.Figure(go.Bar(
+        x            = summary["Class"],
+        y            = summary["Change (km²)"],
+        text         = [f"{v:+.1f}" for v in summary["Change (km²)"]],
+        textposition = "outside",
+        textfont     = dict(color="#e6edf3", size=12),
+        marker_color = [
+            "#f85149" if v < 0 else "#3fb950"
+            for v in summary["Change (km²)"]
+        ],
+        marker_line_width = 0,
+    ))
+
+    delta_fig.update_layout(
+        paper_bgcolor = "#0d1117",
+        plot_bgcolor  = "#0d1117",
+        font          = dict(color="#8b949e", family="Space Grotesk"),
+        xaxis         = dict(showgrid=False),
+        yaxis         = dict(title="Δ km²", gridcolor="#21262d",
+                             zeroline=True, zerolinecolor="#30363d"),
+        height        = 300,
+        margin        = dict(l=10, r=10, t=20, b=10),
     )
-    st.plotly_chart(fig_bar_tab, use_container_width=True, height =500)
+
+    st.plotly_chart(delta_fig, use_container_width=True)
 
 
-
-
-st.divider()
-
-
-
-st.caption(
-    "📌 Data: ESA WorldCover 2020 & 2021 · Sentinel-2 MSI · "
-    "Model: Random Forest (GitHub) · Dataset: HuggingFace"
-)
+# ─── 10. FOOTER ──────────────────────────────────────────────────────────────
+st.markdown("""
+<div style="margin-top:2rem; padding:0.8rem 1rem; border-top:1px solid #21262d;
+            color:#8b949e; font-size:0.78rem; text-align:center;">
+  Data: ESA WorldCover 10 m · Sentinel-2 L2A · Nuremberg area · 2020–2021<br>
+  Built with Streamlit &amp; Plotly
+</div>
+""", unsafe_allow_html=True)
