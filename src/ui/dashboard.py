@@ -1,3 +1,4 @@
+import re
 import os
 import streamlit as st
 import pandas as pd
@@ -132,7 +133,7 @@ def build_map(lat: float, lon: float, view_mode: str) -> go.Figure:
 
     sample = df.sample(min(MAP_SAMPLE_SIZE, len(df)), random_state=42)
 
-    
+
     if view_mode == "2020":
         dot_colors = sample["label_2020"].apply(label_to_color)
         title_text = "Land Cover · 2020"
@@ -179,7 +180,7 @@ def build_map(lat: float, lon: float, view_mode: str) -> go.Figure:
     fig.update_layout(
         title=dict(text=title_text, font=dict(size=15, color="#e0e0e0")),
         mapbox=dict(
-            style="carto-darkmatter",
+            style="open-street-map",
             center=dict(lat=lat, lon=lon),
             zoom=13,
         ),
@@ -193,7 +194,7 @@ def build_map(lat: float, lon: float, view_mode: str) -> go.Figure:
 
 # Speedometer style chart
 def build_gauge(value: float, title: str, color: str) -> go.Figure:
-   
+
     fig = go.Figure(go.Indicator(
         mode  = "gauge+number",
         value = round(value * 100, 1),     # convert to percentage
@@ -342,7 +343,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ─── TABS ──────────────────────────────────────────────────────────────────────
+#TABS
 tab_map, tab_results, tab_stats = st.tabs([
     "📍  Map Explorer",
     "🤖  Model Results",
@@ -350,22 +351,61 @@ tab_map, tab_results, tab_stats = st.tabs([
 ])
 
 
-# Tab 1: Map explorer 
+# Tab 1: Map explorer
 with tab_map:
 
     ctrl_col, map_col = st.columns([1, 3], gap="medium")
 
-    # ── Left column: input controls and legend ────────────────────────────────
+    #Left column: input controls and legend
     with ctrl_col:
         st.markdown('<div class="section-heading">Coordinates</div>',
                     unsafe_allow_html=True)
 
-        lat = st.number_input("Latitude",  value=49.45, min_value=49.30,
-                              max_value=49.60, step=0.001, format="%.5f",
-                              help="WGS-84 decimal degrees (Nuremberg: 49.30–49.60)")
-        lon = st.number_input("Longitude", value=11.07, min_value=10.90,
-                              max_value=11.25, step=0.001, format="%.5f",
-                              help="WGS-84 decimal degrees (Nuremberg: 10.90–11.25)")
+        coord_input = st.text_input(
+            "Coordinates (lat, lon)",
+            value="49.45, 11.07",
+            help="Enter coordinates like: 49.45, 11.07"
+        )
+
+        def parse_coordinates(text):
+
+            try:
+                text = text.strip().upper()
+
+                # Remove degree symbols
+                text = text.replace("°", "")
+
+                # Regex to extract numbers + optional direction
+                pattern = r"([-+]?\d*\.?\d+)\s*([NSEW]?)"
+                matches = re.findall(pattern, text)
+
+                if len(matches) < 2:
+                    return None, None
+
+                def convert(value, direction):
+                    val = float(value)
+                    if direction in ["S", "W"]:
+                        val *= -1
+                    return val
+
+                lat = convert(matches[0][0], matches[0][1])
+                lon = convert(matches[1][0], matches[1][1])
+
+                # Validate global ranges
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    return None, None
+
+                return lat, lon
+
+            except:
+                return None, None
+
+        lat, lon = parse_coordinates(coord_input)
+
+    #  If invalid input
+        if lat is None or lon is None:
+            st.warning("⚠️ Invalid format. Example: 49.45, 11.07 or 49.4415° N, 11.0797° E")
+            st.stop()
 
         st.markdown('<div class="section-heading">View Mode</div>',
                     unsafe_allow_html=True)
@@ -375,9 +415,9 @@ with tab_map:
             options=["2020", "2021", "Change"],
             index=0,
             help=(
-                "2020 / 2021 → colour by ESA land-cover class in that year.\n"
-                "Change → red = class changed, teal = stable."
-            ),
+                    "2020 / 2021 → colour by ESA land-cover class in that year.\n"
+                    "Change → red = class changed, teal = stable."
+                            ),
         )
 
         st.markdown('<div class="section-heading">Legend</div>',
@@ -420,12 +460,8 @@ with tab_map:
         )
 
 
-# TAB 2: Model Results 
+# TAB 2: Model Results
 with tab_results:
-
-    # ── Section 1: grouped bar comparing all metrics across all tasks ─────────
-    st.markdown('<div class="section-heading">All Tasks — Metric Comparison</div>',
-                unsafe_allow_html=True)
 
     df_all = results["all_tasks"].copy()
 
@@ -436,73 +472,6 @@ with tab_results:
         "vegetation_decline": "Vegetation Decline",
     }
     df_all["Task"] = df_all["task"].map(task_display).fillna(df_all["task"])
-
-    # Four metric bars per task, each a different colour
-    metrics_to_plot = ["accuracy", "precision", "recall", "f1"]
-    metric_colors   = ["#58a6ff", "#3fb950", "#f0c040", "#c084fc"]
-
-    compare_fig = go.Figure()
-    for metric, colour in zip(metrics_to_plot, metric_colors):
-        compare_fig.add_trace(go.Bar(
-            name         = metric.capitalize(),
-            x            = df_all["Task"],
-            # Multiply by 100 to show as percentage
-            y            = (df_all[metric] * 100).round(1),
-            marker_color = colour,
-            marker_line_width = 0,
-            text         = (df_all[metric] * 100).round(1).astype(str) + "%",
-            textposition = "outside",
-            textfont     = dict(color="#e6edf3", size=10),
-        ))
-
-    compare_fig.update_layout(
-        barmode       = "group",
-        paper_bgcolor = "#0d1117",
-        plot_bgcolor  = "#0d1117",
-        font          = dict(color="#8b949e", family="Space Grotesk"),
-        xaxis         = dict(showgrid=False),
-        yaxis         = dict(range=[0, 115], gridcolor="#21262d",
-                             ticksuffix="%", title="Score (%)"),
-        legend        = dict(font=dict(color="#e6edf3"),
-                             orientation="h", y=1.12),
-        height        = 360,
-        margin        = dict(l=10, r=10, t=60, b=10),
-    )
-
-    st.plotly_chart(compare_fig, use_container_width=True)
-
-    # Section 2: false change rate 
-    st.markdown('<div class="section-heading">False Change Rate per Task</div>',
-                unsafe_allow_html=True)
-
-    
-    fcr_fig = go.Figure(go.Bar(
-        x            = df_all["Task"],
-        y            = (df_all["false_change_rate"] * 100).round(2),
-        marker_color = "#f85149",
-        marker_line_width = 0,
-        text         = (df_all["false_change_rate"] * 100).round(2).astype(str) + "%",
-        textposition = "outside",
-        textfont     = dict(color="#e6edf3", size=12),
-    ))
-
-    max_fcr = df_all["false_change_rate"].max()
-    fcr_fig.update_layout(
-        paper_bgcolor = "#0d1117",
-        plot_bgcolor  = "#0d1117",
-        font          = dict(color="#8b949e", family="Space Grotesk"),
-        xaxis         = dict(showgrid=False),
-        yaxis         = dict(
-            range=[0, max(max_fcr * 120, 10)],   # always show at least 10% range
-            gridcolor="#21262d",
-            ticksuffix="%",
-            title="False Change Rate (%)",
-        ),
-        height  = 280,
-        margin  = dict(l=10, r=10, t=20, b=10),
-    )
-
-    st.plotly_chart(fcr_fig, use_container_width=True)
 
     st.markdown('<div class="section-heading">Detailed Results per Task</div>',
                 unsafe_allow_html=True)
@@ -517,11 +486,11 @@ with tab_results:
         """, unsafe_allow_html=True)
 
         # Read metric values from the individual task CSV via get_task_metric()
-        acc  = get_task_metric(task_key, "accuracy")
+        acc = get_task_metric(task_key, "accuracy")
         prec = get_task_metric(task_key, "precision")
-        rec  = get_task_metric(task_key, "recall")
-        f1   = get_task_metric(task_key, "f1")
-        fcr  = get_task_metric(task_key, "false_change_rate")
+        rec = get_task_metric(task_key, "recall")
+        f1 = get_task_metric(task_key, "f1")
+        fcr = get_task_metric(task_key, "false_change_rate")
 
         # Four columns, one gauge chart each
         g1, g2, g3, g4 = st.columns(4)
@@ -578,6 +547,38 @@ with tab_results:
         <br>
         """, unsafe_allow_html=True)
 
+#False change rate
+    st.markdown('<div class="section-heading">False Change Rate per Task</div>',
+                unsafe_allow_html=True)
+
+
+    fcr_fig = go.Figure(go.Bar(
+        x            = df_all["Task"],
+        y            = (df_all["false_change_rate"] * 100).round(2),
+        marker_color = "#f85149",
+        marker_line_width = 0,
+        text         = (df_all["false_change_rate"] * 100).round(2).astype(str) + "%",
+        textposition = "outside",
+        textfont     = dict(color="#e6edf3", size=12),
+    ))
+
+    max_fcr = df_all["false_change_rate"].max()
+    fcr_fig.update_layout(
+        paper_bgcolor = "#0d1117",
+        plot_bgcolor  = "#0d1117",
+        font          = dict(color="#8b949e", family="Space Grotesk"),
+        xaxis         = dict(showgrid=False),
+        yaxis         = dict(
+            range=[0, max(max_fcr * 120, 10)],   # always show at least 10% range
+            gridcolor="#21262d",
+            ticksuffix="%",
+            title="False Change Rate (%)",
+        ),
+        height  = 280,
+        margin  = dict(l=10, r=10, t=20, b=10),
+    )
+
+    st.plotly_chart(fcr_fig, use_container_width=True)
 
 # TAB 3 : Area Summary
 with tab_stats:
@@ -607,7 +608,7 @@ with tab_stats:
         hide_index=True,
     )
 
-    # Grouped bar: 2020 vs 2021 
+    # Grouped bar: 2020 vs 2021
     st.markdown('<div class="section-heading">Area Comparison</div>',
                 unsafe_allow_html=True)
 
@@ -628,7 +629,7 @@ with tab_stats:
     )
     st.plotly_chart(bar_fig, use_container_width=True)
 
-    # Net change bar 
+    # Net change bar
     st.markdown('<div class="section-heading">Net Change per Class</div>',
                 unsafe_allow_html=True)
 
