@@ -317,6 +317,17 @@ div[data-testid="stTabs"] button[aria-selected="true"] {
     color: var(--text-main) !important;
     font-family: 'JetBrains Mono', monospace !important;
 }
+.team-name {
+    font-weight: 700;
+    font-size: 0.95rem;
+    margin-top: 0.4rem;
+}
+
+.team-role {
+    font-size: 0.75rem;
+    color: #8b949e;
+    margin-top: 0.2rem;
+}
 .stRadio label { color: var(--text-main) !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -330,10 +341,11 @@ st.markdown("""
 
 
 #TABS
-tab_map, tab_results, tab_stats = st.tabs([
+tab_map, tab_results, tab_stats, tab_about = st.tabs([
     "📍  Map Explorer",
     "🤖  Model Results",
     "📊  Area Summary",
+    "📄  About"
 ])
 
 
@@ -629,8 +641,104 @@ with tab_stats:
         height=280,
         margin=dict(l=10, r=10, t=20, b=10),
     )
-
     st.plotly_chart(fcr_fig, use_container_width=True)
+
+#TAB 4 : About
+with tab_about:
+    st.markdown("## About This Project")
+
+    st.markdown("""
+    ### Project Overview
+    This project focused is on detecting and understanding urban land cover changes in Nuremberg, Germany, between 2020 and 2021.
+    The analysis leverages satellite imagery from ESA WorldCover and Sentinel-2 to train machine learning models that can predict urban development, vegetation decline, and other significant changes. The project includes an interactive dashboard built with Streamlit for visual exploration of the data and model results.
+
+    ### Features
+
+    •Satellite Data Integration: Combines ESA WorldCover with Sentinel-2 imagery. \n
+    •Feature Engineering: Uses spectral indices (NDVI, NDBI) and temporal/spatial features.\n
+    •ML Pipeline: Data prep, spatial cross-validation, and model training (LogReg, RF, HGB). \n
+    •Change Detection: Identifies land cover change, urban growth, and vegetation loss. \n
+    •Evaluation: Standard metrics + custom False Change Rate. \n
+    •Dashboard: Interactive Streamlit app for maps and model insights.\n
+
+    ## Methodology
+
+    ### 🛰️ Data Sources
+    This project combines two complementary satellite datasets:
+
+    - **ESA WorldCover (2020 & 2021):**
+    Provides global land cover classification at 10m resolution, used as ground truth labels for detecting changes.
+
+    - **Sentinel-2 Imagery:**
+    Supplies spectral band data used to analyze land surface characteristics:
+    - **B3 (Green):** Vegetation & chlorophyll activity
+    - **B4 (Red):** Energy absorption & photosynthesis contrast
+    - **B8 (NIR):** Biomass vs. bare soil distinction
+    - **B11 (SWIR):** Moisture detection & urban discrimination
+
+    To ensure consistency, images were selected from **summer 2020 and 2021**, minimizing seasonal variation and focusing purely on temporal change.
+
+    ---
+
+    ### 📥 Data Acquisition
+    Instead of automated APIs, data was **manually selected and downloaded** using:
+
+    - ESA WorldCover (labels)
+    - Copernicus Browser (Sentinel-2 bands)
+
+    This approach allowed:
+    - Precise **cloud-free image selection**
+    - Accurate **bounding box control**
+    - Matching **10m spatial resolution across datasets**
+
+    All data was stored as **GeoTIFF/TIFF** files for efficient processing.
+
+    ---
+
+    ### ⚙️ Data Processing
+    Geospatial processing was performed using **rioxarray**, enabling:
+
+    - Alignment of satellite images via reprojection
+    - Preservation of geographic coordinates (latitude/longitude)
+
+    The data was transformed from raster format into a machine learning-ready table by:
+
+    - Flattening multi-dimensional arrays into tabular format
+    - Extracting spectral bands as features
+    - Joining datasets using geographic coordinates
+
+    ---
+
+    ### 📊 Final Dataset
+    The final dataset represents each geographic point with:
+
+    - 📍 Latitude & Longitude
+    - 🏷️ Land cover labels (2020 & 2021)
+
+    This structured dataset enables **change detection modeling** and powers the interactive analysis in the dashboard.
+    """)
+st.markdown("## Team Members")
+
+team = [
+    ("Carolina Jeanett Ruiz Medina", "Geospatial Data Engineer"),
+    ("Hend Said", "Feature and Label Engineer"),
+    ("Dakshata Anabathula", "Modeling and Evaluation Scientist"),
+    ("Avanti Maske", "Product and Communication Lead"),
+]
+
+cols = st.columns(len(team))
+
+for i, (name, role) in enumerate(team):
+    with cols[i]:
+        st.markdown(f"""
+            <div class="about-card">
+                <div style="font-size: 1.8rem;">👤</div>
+                <div class="team-name">{name}</div>
+                <div class="team-role">{role}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+
 st.markdown("""
     <div style="margin-top:2rem; padding:0.8rem 1rem; border-top:1px solid #21262d;
                 color:#8b949e; font-size:0.78rem; text-align:center;">
