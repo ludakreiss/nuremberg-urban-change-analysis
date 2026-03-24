@@ -614,11 +614,11 @@ with tab_stats:
     )
     st.plotly_chart(delta_fig, use_container_width=True)
 
-st.markdown("""
-<div style="margin-top:2rem; padding:0.8rem 1rem; border-top:1px solid #21262d;
-            color:#8b949e; font-size:0.78rem; text-align:center;">
-  Data: ESA WorldCover 10 m · Sentinel-2 L2A · Nuremberg · 2020–2021
-  &nbsp;|&nbsp; Model results: output/modeling_results/
-  &nbsp;|&nbsp; Built with Streamlit &amp; Plotly
-</div>
-""", unsafe_allow_html=True)
+    st.markdown("""
+    <div style="margin-top:2rem; padding:0.8rem 1rem; border-top:1px solid #21262d;
+                color:#8b949e; font-size:0.78rem; text-align:center;">
+      Data: ESA WorldCover 10 m · Sentinel-2 L2A · Nuremberg · 2020–2021
+      &nbsp;|&nbsp; Model results: output/modeling_results/
+      &nbsp;|&nbsp; Built with Streamlit &amp; Plotly
+    </div>
+    """, unsafe_allow_html=True)
