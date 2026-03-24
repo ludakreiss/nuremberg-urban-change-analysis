@@ -54,12 +54,12 @@ ESA_CLASS_NAMES = {
 }
 
 ESA_CLASS_COLORS = {
-    10: "#1a7d26",
-    30: "#a4d65e",
-    40: "#c8a951",
-    50: "#d73027",
-    60: "#d9c99e",
-    80: "#2196f3",
+    10: "#045f0e",  #tree
+    30: "#477506",  #grass
+    40: "#9a530c",  #Cropland
+    50: "#222020",  #Built-up
+    60: "#6c5002",  #Bare vegetation
+    80: "#03217C",  #Water
 }
 
 DEFAULT_COLOR = "#888888"
@@ -513,38 +513,6 @@ with tab_results:
         <br>
         """, unsafe_allow_html=True)
 
-# st.markdown('<div class="section-heading">False Change Rate per Task</div>',
-#             unsafe_allow_html=True)
-
-# df_best = build_best_per_task_df()
-
-# fcr_fig = go.Figure(go.Bar(
-#     x=df_best["Task"],
-#     y=(df_best["false_change_rate"] * 100).round(2),
-#     marker_color="#f85149",
-#     marker_line_width=0,
-#     text=(df_best["false_change_rate"] * 100).round(2).astype(str) + "%",
-#     textposition="outside",
-#     textfont=dict(color="#e6edf3", size=12),
-# ))
-
-# max_fcr = df_best["false_change_rate"].max() if not df_best.empty else 0.0
-# fcr_fig.update_layout(
-#     paper_bgcolor="#0d1117",
-#     plot_bgcolor="#0d1117",
-#     font=dict(color="#8b949e", family="Space Grotesk"),
-#     xaxis=dict(showgrid=False),
-#     yaxis=dict(
-#         range=[0, max(max_fcr * 120, 10)],
-#         gridcolor="#21262d",
-#         ticksuffix="%",
-#         title="False Change Rate (%)",
-#     ),
-#     height=280,
-#     margin=dict(l=10, r=10, t=20, b=10),
-# )
-
-# st.plotly_chart(fcr_fig, use_container_width=True)
 
 # TAB 3 : Area Summary
 with tab_stats:
@@ -572,17 +540,17 @@ with tab_stats:
         hide_index=True,
     )
 
-    # Grouped bar: 2020 vs 2021 
+    # Grouped bar: 2020 vs 2021
     st.markdown('<div class="section-heading">Area Comparison</div>',
                 unsafe_allow_html=True)
 
     bar_fig = go.Figure()
     bar_fig.add_trace(go.Bar(name="2020", x=summary["Class"],
                              y=summary["Area 2020 (km²)"],
-                             marker_color="#58a6ff", marker_line_width=0))
+                             marker_color="#fff200", marker_line_width=0))
     bar_fig.add_trace(go.Bar(name="2021", x=summary["Class"],
                              y=summary["Area 2021 (km²)"],
-                             marker_color="#3fb950", marker_line_width=0))
+                             marker_color="#1df6d5", marker_line_width=0))
     bar_fig.update_layout(
         barmode="group", paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
         font=dict(color="#8b949e", family="Space Grotesk"),
@@ -593,77 +561,59 @@ with tab_stats:
     )
     st.plotly_chart(bar_fig, use_container_width=True)
 
-    # # Net change bar
-    # st.markdown('<div class="section-heading">Net Change per Class</div>',
-    #             unsafe_allow_html=True)
-
-    # delta_fig = go.Figure(go.Bar(
-    #     x=summary["Class"], y=summary["Change (km²)"],
-    #     text=[f"{v:+.1f}" for v in summary["Change (km²)"]],
-    #     textposition="outside",
-    #     textfont=dict(color="#e6edf3", size=12),
-    #     marker_color=["#f85149" if v < 0 else "#3fb950" for v in summary["Change (km²)"]],
-    #     marker_line_width=0,
-    # ))
-    # delta_fig.update_layout(
-    #     paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
-    #     font=dict(color="#8b949e", family="Space Grotesk"),
-    #     xaxis=dict(showgrid=False),
-    #     yaxis=dict(title="Δ km²", gridcolor="#21262d", zeroline=True, zerolinecolor="#30363d"),
-    #     height=280, margin=dict(l=10, r=10, t=20, b=10),
-    # )
-    # st.plotly_chart(delta_fig, use_container_width=True)
 
     # Net change area chart
     st.markdown('<div class="section-heading">Net Change per Class</div>',
                 unsafe_allow_html=True)
-    
-        delta_fig = go.Figure()
-        
-        delta_fig.add_trace(go.Scatter(
-            x=summary["Class"],
-            y=summary["Change (km²)"],
-            mode='lines+markers',
-            line=dict(width=2),
-            marker=dict(size=6),
-            fill='tozeroy',
-            text=[f"{v:+.1f}" for v in summary["Change (km²)"]],
-            textposition="top center",
-            textfont=dict(color="#e6edf3", size=12),
-        ))
-        
-        delta_fig.update_layout(
-            paper_bgcolor="#0d1117",
-            plot_bgcolor="#0d1117",
-            font=dict(color="#8b949e", family="Space Grotesk"),
-            xaxis=dict(showgrid=False),
-            yaxis=dict(
-                title="Δ km²",
-                gridcolor="#21262d",
-                zeroline=True,
-                zerolinecolor="#30363d"
-            ),
-            height=280,
-            margin=dict(l=10, r=10, t=20, b=10),
-        )
-    
+
+    delta_fig = go.Figure()
+
+    delta_fig.add_trace(go.Scatter(
+        x=summary["Class"],
+        y=summary["Change (km²)"],
+        mode='lines+markers',
+        line=dict(width=2),
+        marker=dict(size=6),
+        fill='tozeroy',
+        text=[f"{v:+.1f}" for v in summary["Change (km²)"]],
+        textposition="top center",
+        textfont=dict(color="#e6edf3", size=12),
+    ))
+
+    delta_fig.update_layout(
+        paper_bgcolor="#0d1117",
+        plot_bgcolor="#0d1117",
+        font=dict(color="#8b949e", family="Space Grotesk"),
+        xaxis=dict(showgrid=False),
+        yaxis=dict(
+            title="Δ km²",
+            gridcolor="#21262d",
+            zeroline=True,
+            zerolinecolor="#30363d"
+        ),
+        height=280,
+        margin=dict(l=10, r=10, t=20, b=10),
+    )
+
     st.plotly_chart(delta_fig, use_container_width=True)
-    
+
+    #False change rate
     st.markdown('<div class="section-heading">False Change Rate per Task</div>',
             unsafe_allow_html=True)
 
     df_best = build_best_per_task_df()
-    
-    fcr_fig = go.Figure(go.Bar(
+
+    fcr_fig = go.Figure(go.Scatter(
         x=df_best["Task"],
         y=(df_best["false_change_rate"] * 100).round(2),
-        marker_color="#f85149",
-        marker_line_width=0,
+        mode="lines+markers",
+        line=dict(color="#f85149", width=2),
+        marker=dict(size=6),
         text=(df_best["false_change_rate"] * 100).round(2).astype(str) + "%",
-        textposition="outside",
+        textposition="top center",
         textfont=dict(color="#e6edf3", size=12),
     ))
-    
+
     max_fcr = df_best["false_change_rate"].max() if not df_best.empty else 0.0
     fcr_fig.update_layout(
         paper_bgcolor="#0d1117",
@@ -679,9 +629,8 @@ with tab_stats:
         height=280,
         margin=dict(l=10, r=10, t=20, b=10),
     )
-    
+
     st.plotly_chart(fcr_fig, use_container_width=True)
-    
 st.markdown("""
     <div style="margin-top:2rem; padding:0.8rem 1rem; border-top:1px solid #21262d;
                 color:#8b949e; font-size:0.78rem; text-align:center;">
