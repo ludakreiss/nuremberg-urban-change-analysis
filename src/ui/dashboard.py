@@ -513,38 +513,38 @@ with tab_results:
         <br>
         """, unsafe_allow_html=True)
 
-st.markdown('<div class="section-heading">False Change Rate per Task</div>',
-            unsafe_allow_html=True)
+# st.markdown('<div class="section-heading">False Change Rate per Task</div>',
+#             unsafe_allow_html=True)
 
-df_best = build_best_per_task_df()
+# df_best = build_best_per_task_df()
 
-fcr_fig = go.Figure(go.Bar(
-    x=df_best["Task"],
-    y=(df_best["false_change_rate"] * 100).round(2),
-    marker_color="#f85149",
-    marker_line_width=0,
-    text=(df_best["false_change_rate"] * 100).round(2).astype(str) + "%",
-    textposition="outside",
-    textfont=dict(color="#e6edf3", size=12),
-))
+# fcr_fig = go.Figure(go.Bar(
+#     x=df_best["Task"],
+#     y=(df_best["false_change_rate"] * 100).round(2),
+#     marker_color="#f85149",
+#     marker_line_width=0,
+#     text=(df_best["false_change_rate"] * 100).round(2).astype(str) + "%",
+#     textposition="outside",
+#     textfont=dict(color="#e6edf3", size=12),
+# ))
 
-max_fcr = df_best["false_change_rate"].max() if not df_best.empty else 0.0
-fcr_fig.update_layout(
-    paper_bgcolor="#0d1117",
-    plot_bgcolor="#0d1117",
-    font=dict(color="#8b949e", family="Space Grotesk"),
-    xaxis=dict(showgrid=False),
-    yaxis=dict(
-        range=[0, max(max_fcr * 120, 10)],
-        gridcolor="#21262d",
-        ticksuffix="%",
-        title="False Change Rate (%)",
-    ),
-    height=280,
-    margin=dict(l=10, r=10, t=20, b=10),
-)
+# max_fcr = df_best["false_change_rate"].max() if not df_best.empty else 0.0
+# fcr_fig.update_layout(
+#     paper_bgcolor="#0d1117",
+#     plot_bgcolor="#0d1117",
+#     font=dict(color="#8b949e", family="Space Grotesk"),
+#     xaxis=dict(showgrid=False),
+#     yaxis=dict(
+#         range=[0, max(max_fcr * 120, 10)],
+#         gridcolor="#21262d",
+#         ticksuffix="%",
+#         title="False Change Rate (%)",
+#     ),
+#     height=280,
+#     margin=dict(l=10, r=10, t=20, b=10),
+# )
 
-st.plotly_chart(fcr_fig, use_container_width=True)
+# st.plotly_chart(fcr_fig, use_container_width=True)
 
 # TAB 3 : Area Summary
 with tab_stats:
@@ -613,8 +613,41 @@ with tab_stats:
         height=280, margin=dict(l=10, r=10, t=20, b=10),
     )
     st.plotly_chart(delta_fig, use_container_width=True)
+    
+    st.markdown('<div class="section-heading">False Change Rate per Task</div>',
+            unsafe_allow_html=True)
 
-    st.markdown("""
+    df_best = build_best_per_task_df()
+    
+    fcr_fig = go.Figure(go.Bar(
+        x=df_best["Task"],
+        y=(df_best["false_change_rate"] * 100).round(2),
+        marker_color="#f85149",
+        marker_line_width=0,
+        text=(df_best["false_change_rate"] * 100).round(2).astype(str) + "%",
+        textposition="outside",
+        textfont=dict(color="#e6edf3", size=12),
+    ))
+    
+    max_fcr = df_best["false_change_rate"].max() if not df_best.empty else 0.0
+    fcr_fig.update_layout(
+        paper_bgcolor="#0d1117",
+        plot_bgcolor="#0d1117",
+        font=dict(color="#8b949e", family="Space Grotesk"),
+        xaxis=dict(showgrid=False),
+        yaxis=dict(
+            range=[0, max(max_fcr * 120, 10)],
+            gridcolor="#21262d",
+            ticksuffix="%",
+            title="False Change Rate (%)",
+        ),
+        height=280,
+        margin=dict(l=10, r=10, t=20, b=10),
+    )
+    
+    st.plotly_chart(fcr_fig, use_container_width=True)
+    
+st.markdown("""
     <div style="margin-top:2rem; padding:0.8rem 1rem; border-top:1px solid #21262d;
                 color:#8b949e; font-size:0.78rem; text-align:center;">
       Data: ESA WorldCover 10 m · Sentinel-2 L2A · Nuremberg · 2020–2021
