@@ -1,168 +1,223 @@
-import pandas as pd
-import numpy as np
-import geopandas as gpd
-import shapely
-import rasterio
-import re
 import os
+import numpy as np
+import pandas as pd
 
-from rasterstats import zonal_stats
-from libpysal.weights import Queen, lag_spatial
 
+BUILT_UP_CLASS = 50
+VEGETATION_CLASSES = {10, 30}  # Tree cover, Grassland
+NON_VEGETATION_CLASSES = {40, 50, 60, 80}  # Cropland, Built-up, Bare/sparse, Water
 
-# ------------- Feature functions  ------------- 
 
 def ndvi(nir, red):
-    return (nir - red) / (nir + red)
+    denom = nir + red
+    return np.where(denom == 0, 0, (nir - red) / denom)
 
 
 def ndbi(nir, swir):
-    return (swir - nir) / (swir + nir)
-
-#  -------------  Geometry helpers  ------------- 
-
-def get_square_around_point(point_geom, delta_size=0.0005):
-    point_coords = np.array(point_geom.coords[0])
-
-    c1 = point_coords + [-delta_size, -delta_size]
-    c2 = point_coords + [-delta_size, +delta_size]
-    c3 = point_coords + [+delta_size, +delta_size]
-    c4 = point_coords + [+delta_size, -delta_size]
-
-    return shapely.geometry.Polygon([c1, c2, c3, c4])
+    denom = swir + nir
+    return np.where(denom == 0, 0, (swir - nir) / denom)
 
 
-def get_gdf_with_squares(gdf, delta_size=0.0005):
-    gdf = gdf.copy()
-    gdf["geometry"] = gdf["geometry"].apply(
-        lambda geom: get_square_around_point(geom, delta_size)
+def safe_read_parquet(path):
+    if not os.path.exists(path):
+        print(f"File not found: {path}")
+        return None
+    try:
+        df = pd.read_parquet(path)
+        print(f"Loaded parquet: {path} | shape={df.shape}")
+        return df
+    except Exception as e:
+        print(f"Could not read parquet {path}: {e}")
+        return None
+
+
+def try_merge_worldcover_stats(df, wc_2020, wc_2021):
+    if wc_2020 is None or wc_2021 is None:
+        print("WorldCover stats missing. Skipping merge.")
+        return df
+
+    possible_keys = ["grid_id", "id", "tile_id", "cell_id"]
+    shared_key = None
+
+    for key in possible_keys:
+        if key in df.columns and key in wc_2020.columns and key in wc_2021.columns:
+            shared_key = key
+            break
+
+    if shared_key is None:
+        print("No shared merge key found between master dataset and WC stats.")
+        print("Skipping WC stats merge.")
+        return df
+
+    print(f"Merging WC stats using key: {shared_key}")
+
+    wc_2020 = wc_2020.copy().rename(
+        columns={c: f"{c}_2020" for c in wc_2020.columns if c != shared_key}
     )
-    return gdf
-
-
-#  ------------- ESA extraction  ------------- 
-
-def extract_proportions(gdf_squares, classes, wc_tif):
-    wc_stats = zonal_stats(
-        gdf_squares,
-        wc_tif,
-        stats="count",
-        categorical=True,
-        category_map=classes,
+    wc_2021 = wc_2021.copy().rename(
+        columns={c: f"{c}_2021" for c in wc_2021.columns if c != shared_key}
     )
 
-    df = pd.DataFrame(wc_stats).fillna(0)
-    total_pixels = df["count"]
+    df = df.merge(wc_2020, on=shared_key, how="left")
+    df = df.merge(wc_2021, on=shared_key, how="left")
 
-    for _, original_name in classes.items():
-        if original_name in df.columns:
-            clean_name = re.sub(r"[^\w\s]", "", original_name)
-            clean_name = re.sub(r"\s+", "_", clean_name).lower()
-
-            df[f"{clean_name}_prop"] = df[original_name] / total_pixels
-
+    print(f"After WC merge: {df.shape}")
     return df
 
 
-#  ------------- Main pipeline  ------------- 
+def build_spatial_context_features(df, base_cols, lat_bin_size=0.001, lon_bin_size=0.001):
+    print("Building scalable spatial neighborhood features...")
+
+    df = df.copy()
+
+    df["lat_bin"] = np.floor(df["latitude"] / lat_bin_size).astype(np.int32)
+    df["lon_bin"] = np.floor(df["longitude"] / lon_bin_size).astype(np.int32)
+
+    agg_dict = {col: "mean" for col in base_cols}
+    bin_stats = (
+        df.groupby(["lat_bin", "lon_bin"], as_index=False)
+        .agg(agg_dict)
+        .rename(columns={col: f"{col}_cell_mean" for col in base_cols})
+    )
+
+    neighbor_frames = []
+    for dlat in [-1, 0, 1]:
+        for dlon in [-1, 0, 1]:
+            tmp = bin_stats.copy()
+            tmp["lat_bin"] = tmp["lat_bin"] - dlat
+            tmp["lon_bin"] = tmp["lon_bin"] - dlon
+            neighbor_frames.append(tmp)
+
+    neighbors_all = pd.concat(neighbor_frames, ignore_index=True)
+    neighbor_cols = [f"{col}_cell_mean" for col in base_cols]
+
+    neighbor_stats = (
+        neighbors_all.groupby(["lat_bin", "lon_bin"], as_index=False)[neighbor_cols]
+        .mean()
+        .rename(columns={f"{col}_cell_mean": f"{col}_lag" for col in base_cols})
+    )
+
+    df = df.merge(neighbor_stats, on=["lat_bin", "lon_bin"], how="left")
+    df.drop(columns=["lat_bin", "lon_bin"], inplace=True)
+
+    print("Spatial neighborhood features created.")
+    return df
 
 
 def main():
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-    # Load data
-    df = pd.read_csv("../output/nuremberg_dataset_final.csv")
+    input_csv = os.path.join(project_root, "output", "nuremberg_dataset_final.csv")
+    wc_2020_path = os.path.join(project_root, "data", "hf_data", "wc_stats_2020.parquet")
+    wc_2021_path = os.path.join(project_root, "data", "hf_data", "wc_stats_2021.parquet")
 
-    print("loaded dataset:", df.shape)
+    output_combined_dir = os.path.join(project_root, "data", "labels", "combined_format")
+    output_split_dir = os.path.join(project_root, "data", "labels", "split_format")
 
-    # ----------------------------------------------------
+    os.makedirs(output_combined_dir, exist_ok=True)
+    os.makedirs(output_split_dir, exist_ok=True)
 
-    # Cleaning
-    df = df.dropna()
-    df.insert(0, "grid_id", range(len(df)))
+    df = pd.read_csv(input_csv)
+    print("Loaded dataset:", df.shape)
 
-    # ----------------------------------------------------
+    df = df.reset_index(drop=True)
 
-    # Spectral indices
-    df["ndvi_2020"] = ndvi(df["b8_2020"], df["b4_2020"])
-    df["ndvi_2021"] = ndvi(df["b8_2021"], df["b4_2021"])
+    if "grid_id" not in df.columns:
+        df.insert(0, "grid_id", np.arange(len(df), dtype=np.int64))
 
-    df["ndbi_2020"] = ndbi(df["b8_2020"], df["b11_2020"])
-    df["ndbi_2021"] = ndbi(df["b8_2021"], df["b11_2021"])
+    # basic type cleanup for memory
+    float_cols = [
+        "longitude", "latitude",
+        "b3_2020", "b4_2020", "b8_2020", "b11_2020",
+        "b3_2021", "b4_2021", "b8_2021", "b11_2021",
+    ]
+    for col in float_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(np.float32)
 
-    # ----------------------------------------------------
+    for col in ["label_2020", "label_2021"]:
+        if col in df.columns:
+            df[col] = df[col].astype(np.int16)
 
-    # Temporal features
-    df["delta_ndvi"] = df["ndvi_2021"] - df["ndvi_2020"]
-    df["delta_ndbi"] = df["ndbi_2021"] - df["ndbi_2020"]
+    # spectral indices
+    df["ndvi_2020"] = ndvi(df["b8_2020"], df["b4_2020"]).astype(np.float32)
+    df["ndvi_2021"] = ndvi(df["b8_2021"], df["b4_2021"]).astype(np.float32)
+    df["ndbi_2020"] = ndbi(df["b8_2020"], df["b11_2020"]).astype(np.float32)
+    df["ndbi_2021"] = ndbi(df["b8_2021"], df["b11_2021"]).astype(np.float32)
 
-    # ----------------------------------------------------
+    # temporal descriptors
+    df["delta_ndvi"] = (df["ndvi_2021"] - df["ndvi_2020"]).astype(np.float32)
+    df["delta_ndbi"] = (df["ndbi_2021"] - df["ndbi_2020"]).astype(np.float32)
 
-    # GeoDataFrame
-    gdf = gpd.GeoDataFrame(
-        df,
-        geometry=gpd.points_from_xy(df["longitude"], df["latitude"]),
-        crs="EPSG:4326",
+    # optional WC stats
+    wc_stats_2020 = safe_read_parquet(wc_2020_path)
+    wc_stats_2021 = safe_read_parquet(wc_2021_path)
+    df = try_merge_worldcover_stats(df, wc_stats_2020, wc_stats_2021)
+
+    # spatial context features
+    lag_base_cols = [
+        "b3_2020", "b4_2020", "b8_2020", "b11_2020",
+        "b3_2021", "b4_2021", "b8_2021", "b11_2021",
+        "ndvi_2020", "ndvi_2021",
+        "ndbi_2020", "ndbi_2021",
+        "delta_ndvi", "delta_ndbi",
+    ]
+    lag_base_cols = [c for c in lag_base_cols if c in df.columns]
+    df = build_spatial_context_features(df, lag_base_cols)
+
+    # realistic labels from ESA transitions
+    y0 = df["label_2020"]
+    y1 = df["label_2021"]
+
+    df["changing_areas"] = (y0 != y1).astype(np.int8)
+
+    df["built_up_increase"] = (
+        (y0 != BUILT_UP_CLASS) & (y1 == BUILT_UP_CLASS)
+    ).astype(np.int8)
+
+    df["vegetation_decline"] = (
+        y0.isin(VEGETATION_CLASSES) & y1.isin(NON_VEGETATION_CLASSES)
+    ).astype(np.int8)
+
+    print("\nLabel distribution:")
+    for label_col in ["changing_areas", "built_up_increase", "vegetation_decline"]:
+        positive_rate = float(df[label_col].mean())
+        positive_count = int(df[label_col].sum())
+        print(f"  {label_col}: {positive_count}/{len(df)} ({positive_rate:.4%})")
+
+    combined_path = os.path.join(output_combined_dir, "nuremberg_features_labels.parquet")
+    df.to_parquet(combined_path, index=False)
+    print(f"[OK] Saved combined dataset: {combined_path}")
+
+    split_feature_cols_2020 = [c for c in [
+        "grid_id", "longitude", "latitude",
+        "label_2020", "b3_2020", "b4_2020", "b8_2020", "b11_2020", "ndvi_2020", "ndbi_2020"
+    ] if c in df.columns]
+
+    split_feature_cols_2021 = [c for c in [
+        "grid_id", "label_2021", "b3_2021", "b4_2021", "b8_2021", "b11_2021", "ndvi_2021", "ndbi_2021"
+    ] if c in df.columns]
+
+    split_label_cols = [c for c in [
+        "grid_id",
+        "delta_ndvi", "delta_ndbi",
+        "changing_areas", "built_up_increase", "vegetation_decline"
+    ] if c in df.columns]
+
+    df[split_feature_cols_2020].to_parquet(
+        os.path.join(output_split_dir, "features_2020.parquet"),
+        index=False,
+    )
+    df[split_feature_cols_2021].to_parquet(
+        os.path.join(output_split_dir, "features_2021.parquet"),
+        index=False,
+    )
+    df[split_label_cols].to_parquet(
+        os.path.join(output_split_dir, "labels.parquet"),
+        index=False,
     )
 
-    gdf_squares = get_gdf_with_squares(gdf) # used to create wc_stats
-
-    # ----------------------------------------------------
-
-    # Load ESA stats (precomputed from notebook)
-    wc_stats_2020 = pd.read_parquet("../data/hf_data/wc_stats_2020.parquet")
-    wc_stats_2021 = pd.read_parquet("../data/hf_data/wc_stats_2021.parquet")
-    # ----------------------------------------------------
-
-    # More temporal features
-    df["delta_built_up"] = (
-        wc_stats_2021["built_up_prop"] - wc_stats_2020["built_up_prop"]
-    )
-
-    df["delta_veg"] = (
-        wc_stats_2021["bare_sparse_vegetation_prop"]
-        - wc_stats_2020["bare_sparse_vegetation_prop"]
-    )
-
-    # ----------------------------------------------------
-
-    # Spatial autocorrelation
-    w = Queen.from_dataframe(gdf)
-    w.transform = "R"
-
-    for col in ["ndvi_2020", "ndvi_2021", "ndbi_2020", "ndbi_2021"]:
-        gdf[f"{col}_lag"] = lag_spatial(w, gdf[col])
-
-    # ----------------------------------------------------
-
-    # Labels
-    threshold = 0.05
-
-    df["changing_areas"] = np.abs(df["delta_built_up"]) > threshold
-    df["built_up_increase"] = df["delta_built_up"] > threshold
-    df["vegetation_decline"] = df["delta_veg"] < 0.0
-
-    # ----------------------------------------------------
-
-    # Export
-
-    #Full Dataset
-    os.makedirs("../data/labels/combined_format", exist_ok=True)
-
-    df.to_parquet("../data/labels/combined_format/nuremberg_features_labels.parquet", index=False)
-
-    # Split Dataset
-    os.makedirs("../data/labels/split_format", exist_ok=True)
-
-    features_2020 = ['b3_2020', 'b4_2020', 'b8_2020', 'b11_2020', 'ndvi_2020', 'ndbi_2020']
-    features_2021 = ['b3_2021', 'b4_2021', 'b8_2021', 'b11_2021', 'ndvi_2021', 'ndbi_2021']
-    features_delta = ['delta_ndvi', 'delta_ndbi', 'delta_built_up','delta_veg']
-    labels = ['changing_areas', 'built_up_increase', 'vegetation_decline']
-
-    df[['grid_id'] + features_2020].to_parquet("../data/labels/split_format/features_2020.parquet", index=False)
-    df[['grid_id'] + features_2021].to_parquet("../data/labels/split_format/features_2021.parquet", index=False)
-    df[['grid_id'] + features_delta + labels].to_parquet("../data/labels/split_format/labels.parquet", index=False)
-
-
+    print("Feature engineering completed successfully.")
 
 
 if __name__ == "__main__":

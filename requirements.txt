@@ -14,3 +14,4 @@ scikit-learn
 pyarrow
 huggingface_hub
 plotly
+streamlit

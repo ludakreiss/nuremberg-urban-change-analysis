@@ -4,7 +4,7 @@ sys.path.append("../src")
 import os
 import rioxarray
 import matplotlib.pyplot as plt
-from nud.geospatial.raster_utils import raster_to_df
+from geospatial.raster_utils import raster_to_df
 
 # Define Nürnberg bounds
 bounds = (10.95, 49.38, 11.15, 49.52)
