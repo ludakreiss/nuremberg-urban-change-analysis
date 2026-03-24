@@ -593,25 +593,60 @@ with tab_stats:
     )
     st.plotly_chart(bar_fig, use_container_width=True)
 
-    # Net change bar
+    # # Net change bar
+    # st.markdown('<div class="section-heading">Net Change per Class</div>',
+    #             unsafe_allow_html=True)
+
+    # delta_fig = go.Figure(go.Bar(
+    #     x=summary["Class"], y=summary["Change (km²)"],
+    #     text=[f"{v:+.1f}" for v in summary["Change (km²)"]],
+    #     textposition="outside",
+    #     textfont=dict(color="#e6edf3", size=12),
+    #     marker_color=["#f85149" if v < 0 else "#3fb950" for v in summary["Change (km²)"]],
+    #     marker_line_width=0,
+    # ))
+    # delta_fig.update_layout(
+    #     paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+    #     font=dict(color="#8b949e", family="Space Grotesk"),
+    #     xaxis=dict(showgrid=False),
+    #     yaxis=dict(title="Δ km²", gridcolor="#21262d", zeroline=True, zerolinecolor="#30363d"),
+    #     height=280, margin=dict(l=10, r=10, t=20, b=10),
+    # )
+    # st.plotly_chart(delta_fig, use_container_width=True)
+
+    # Net change area chart
     st.markdown('<div class="section-heading">Net Change per Class</div>',
                 unsafe_allow_html=True)
-
-    delta_fig = go.Figure(go.Bar(
-        x=summary["Class"], y=summary["Change (km²)"],
-        text=[f"{v:+.1f}" for v in summary["Change (km²)"]],
-        textposition="outside",
-        textfont=dict(color="#e6edf3", size=12),
-        marker_color=["#f85149" if v < 0 else "#3fb950" for v in summary["Change (km²)"]],
-        marker_line_width=0,
-    ))
-    delta_fig.update_layout(
-        paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
-        font=dict(color="#8b949e", family="Space Grotesk"),
-        xaxis=dict(showgrid=False),
-        yaxis=dict(title="Δ km²", gridcolor="#21262d", zeroline=True, zerolinecolor="#30363d"),
-        height=280, margin=dict(l=10, r=10, t=20, b=10),
-    )
+    
+        delta_fig = go.Figure()
+        
+        delta_fig.add_trace(go.Scatter(
+            x=summary["Class"],
+            y=summary["Change (km²)"],
+            mode='lines+markers',
+            line=dict(width=2),
+            marker=dict(size=6),
+            fill='tozeroy',
+            text=[f"{v:+.1f}" for v in summary["Change (km²)"]],
+            textposition="top center",
+            textfont=dict(color="#e6edf3", size=12),
+        ))
+        
+        delta_fig.update_layout(
+            paper_bgcolor="#0d1117",
+            plot_bgcolor="#0d1117",
+            font=dict(color="#8b949e", family="Space Grotesk"),
+            xaxis=dict(showgrid=False),
+            yaxis=dict(
+                title="Δ km²",
+                gridcolor="#21262d",
+                zeroline=True,
+                zerolinecolor="#30363d"
+            ),
+            height=280,
+            margin=dict(l=10, r=10, t=20, b=10),
+        )
+    
     st.plotly_chart(delta_fig, use_container_width=True)
     
     st.markdown('<div class="section-heading">False Change Rate per Task</div>',
