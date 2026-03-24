@@ -717,26 +717,26 @@ with tab_about:
 
     This structured dataset enables **change detection modeling** and powers the interactive analysis in the dashboard.
     """)
-st.markdown("## Team Members")
-
-team = [
-    ("Carolina Jeanett Ruiz Medina", "Geospatial Data Engineer"),
-    ("Hend Said", "Feature and Label Engineer"),
-    ("Dakshata Anabathula", "Modeling and Evaluation Scientist"),
-    ("Avanti Maske", "Product and Communication Lead"),
-]
-
-cols = st.columns(len(team))
-
-for i, (name, role) in enumerate(team):
-    with cols[i]:
-        st.markdown(f"""
-            <div class="about-card">
-                <div style="font-size: 1.8rem;">👤</div>
-                <div class="team-name">{name}</div>
-                <div class="team-role">{role}</div>
-            </div>
-        """, unsafe_allow_html=True)
+    st.markdown("## Team Members")
+    
+    team = [
+        ("Carolina Jeanett Ruiz Medina", "Geospatial Data Engineer"),
+        ("Hend Said", "Feature and Label Engineer"),
+        ("Dakshata Anabathula", "Modeling and Evaluation Scientist"),
+        ("Avanti Maske", "Product and Communication Lead"),
+    ]
+    
+    cols = st.columns(len(team))
+    
+    for i, (name, role) in enumerate(team):
+        with cols[i]:
+            st.markdown(f"""
+                <div class="about-card">
+                    <div style="font-size: 1.8rem;">👤</div>
+                    <div class="team-name">{name}</div>
+                    <div class="team-role">{role}</div>
+                </div>
+            """, unsafe_allow_html=True)
 
 
 st.markdown("""
